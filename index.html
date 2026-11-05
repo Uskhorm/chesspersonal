@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/hindsight/icon.svg" />
+    <link rel="manifest" href="/hindsight/manifest.webmanifest" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#faf9f6" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Hindsight" />
+    <meta name="description" content="Hindsight reviews your chess.com games the moment you finish them and turns every mistake into a position you replay until you stop making it." />
+    <title>Hindsight: chess review that trains your mistakes</title>
+    <script>
+      // Resolve the theme before CSS paints so dark-mode users never see a white flash.
+      (function () {
+        try {
+          var t = localStorage.getItem('hindsight-theme');
+          var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+          var r = dark ? 'dark' : 'light';
+          document.documentElement.dataset.theme = r;
+          document.documentElement.style.colorScheme = r;
+          document.querySelector('meta[name="theme-color"]').content = dark ? '#17191c' : '#faf9f6';
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet" />
+    <script type="module" crossorigin src="/hindsight/assets/index-CoFzreZR.js"></script>
+    <link rel="modulepreload" crossorigin href="/hindsight/assets/preload-helper-C4jc-9E6.js">
+    <link rel="modulepreload" crossorigin href="/hindsight/assets/motion-DkeALLdP.js">
+    <link rel="stylesheet" crossorigin href="/hindsight/assets/index-BHzgH3Xc.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
