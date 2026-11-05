@@ -217,17 +217,29 @@ export function hints(m: AnalysedMove): Hint[] {
   const moves = bestLine(m), first = moves[0], key = keyMove(moves, m.color);
   const from = first?.from ?? m.bestUci.slice(0, 2), to = first?.to ?? m.bestUci.slice(2, 4);
   const p = first?.piece ?? new Chess(m.fenBefore).get(from as Square)?.type ?? 'p';
-  const point = key && keyPoint(key);
-  const concept = point?.startsWith('forks')
-    ? `${new Chess(key!.after).inCheck() ? 'Look for a check that' : 'Look for a move that'} ${point}.`
-    : point?.startsWith('pins') ? `Look for a move that ${point}.`
-    : point?.startsWith('skewers') ? 'Check their king to win the piece behind it.'
-    : key?.san.endsWith('#') ? 'Look for forcing checks that leave their king no escape.'
-    : key?.promotion ? `Promote your pawn to a ${PIECE_NAME[key.promotion]}.`
-    : point?.startsWith('uncovers') ? `Move out of the way to ${point.replace('uncovers', 'uncover')}.`
-    : first?.captured ? `Win the ${PIECE_NAME[first.captured]} on ${first.isEnPassant() ? first.to[0] + first.from[1] : first.to}.`
-    : new Chess(m.fenBefore).inCheck() ? 'Get your king out of check before attacking.'
-    : 'Find a safe, active square for this piece.';
+  // The instruction always belongs to the first move; later motifs explain why.
+  const point = first && keyPoint(first);
+  let concept = point ? `Look for a move that ${point}.` : 'Find a safe, active square for this piece.';
+  if (first?.captured) {
+    const square = first.isEnPassant() ? first.to[0] + first.from[1] : first.to;
+    concept = `Take the ${PIECE_NAME[first.captured]} on ${square}${new Chess(first.after).inCheck() ? ' with check' : ''}`;
+    const laterPoint = key && key !== first ? keyPoint(key) : undefined;
+    if (key && laterPoint) {
+      const guarded = new Chess(first.before).attackers(key.to, first.color === 'w' ? 'b' : 'w').includes(square as Square);
+      concept += guarded
+        ? ` first — it was guarding the ${key.to} square your ${PIECE_NAME[key.piece]} wants`
+        : ' first';
+      if (laterPoint.startsWith('forks')) {
+        concept += `, so a later ${PIECE_NAME[key.piece]}${new Chess(key.after).inCheck() ? ' check' : ' move'} can ${laterPoint.replace(/^forks/, 'fork')}`;
+      }
+    }
+    concept += '.';
+  } else if (first && !point) {
+    const before = new Chess(first.before), after = new Chess(first.after);
+    if (before.inCheck()) concept = first.piece === 'k'
+      ? 'Move your king out of check.' : `Block the check with your ${PIECE_NAME[first.piece]}.`;
+    else if (after.inCheck()) concept = 'Give check to their king.';
+  }
   return [
     { level: 1, text: `Look at your ${PIECE_NAME[p]} on ${from}.`, highlight: { squares: [from] } },
     { level: 2, text: concept },

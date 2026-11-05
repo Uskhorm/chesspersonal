@@ -7,12 +7,14 @@ const SHOW = new Set<Classification>(['brilliant', 'great', 'best', 'book', 'ina
 export function MoveList({ moves, ply, onSelect, disabled }: { moves: AnalysedMove[]; ply: number; onSelect: (p: number) => void; disabled?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = ref.current?.querySelector('.mv.here') as HTMLElement | null;
-    if (el && ref.current) {
-      const box = ref.current;
-      const top = el.offsetTop - box.clientHeight / 2;
+    const box = ref.current;
+    const el = box?.querySelector('.mv.here') as HTMLElement | null;
+    if (el && box) {
+      const b = box.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const top = box.scrollTop + (r.top - b.top) - box.clientHeight / 2 + r.height / 2;
       box.scrollTo({ top, behavior: 'smooth' });
-    }
+    } else box?.scrollTo({ top: 0 });
   }, [ply]);
   const rows: [AnalysedMove, AnalysedMove | undefined][] = [];
   for (let i = 0; i < moves.length; i += 2) rows.push([moves[i], moves[i + 1]]);

@@ -52,7 +52,7 @@ export function TapeRow({ g, curve }: { g: StoredGame; curve?: number[] }) {
         </span>
       </span>
       <span className="acc display num">
-        {analysing ? <span className="spin" /> : g.analysed && g.userAccuracy !== undefined ? g.userAccuracy.toFixed(1) : <span className="faint t-small" style={{ fontWeight: 600, fontVariationSettings: "'wdth' 100" }}>{queued ? 'Queued' : '—'}</span>}
+        {analysing ? <span className="spin" /> : g.analysed && g.userAccuracy !== undefined ? <>{g.userAccuracy.toFixed(1)}<span className="acc-label">accuracy</span></> : <span className="faint t-small" style={{ fontWeight: 600, fontVariationSettings: "'wdth' 100" }}>{queued ? 'Queued' : '—'}</span>}
       </span>
       <span className="marks">
         {curve && <TapeSpark curve={curve} userColor={g.userColor} />}

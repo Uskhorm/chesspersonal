@@ -215,6 +215,7 @@ export function useLearnFlow(analysis: GameAnalysis, userColor: Color, options: 
     if (preceding) lastMove = [preceding.from, preceding.to];
   } else if (m && state.phase === 'replay' && plan) {
     const line = replaySan(m.fenBefore, plan.line);
+    // Match lineExplained[step - 1] to the board, and preview only the next move.
     const move = line[(p?.replayStep ?? 0) - 1];
     if (move) { fen = move.after; lastMove = [move.from, move.to]; }
     const next = line[p?.replayStep ?? 0];

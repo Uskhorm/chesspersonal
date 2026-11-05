@@ -327,7 +327,9 @@ export function useTrainSession(mode: TrainMode, options: TrainOptions = {}) {
       : state.hintsUsed === 2 ? { squares: [line[state.solutionStep]?.slice(0, 2)] } : undefined,
   } : undefined;
   const activeHint = hint ?? puzzleHint;
-  const reveal = ['wrong', 'explain'].includes(state.phase) ? line[state.solutionStep] : undefined;
+  // Replay captions describe step - 1; the arrow previews step, the next move.
+  const reveal = state.phase === 'replay' ? line[state.replayStep]
+    : ['wrong', 'explain'].includes(state.phase) ? line[state.solutionStep] : undefined;
   const arrow = reveal ? [reveal.slice(0, 2), reveal.slice(2, 4)] : state.phase === 'solve' ? activeHint?.highlight?.arrow : undefined;
   return { ...state, item, hint: activeHint,
     explanation: coaching?.explanation ?? (item?.kind === 'puzzle' ? { headline: 'Follow the forcing line',

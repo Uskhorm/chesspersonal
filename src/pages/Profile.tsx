@@ -8,6 +8,7 @@ import { cloudEnabled } from '../lib/api';
 import { syncNow, useCloudSync } from '../lib/cloudsync';
 import { useInstallPrompt } from '../lib/pwa';
 import { THEMES } from '../components/themes';
+import { Medal } from '../components/Medal';
 import { emit } from '../lib/bus';
 
 function ago(t: number | null | undefined) {
@@ -134,7 +135,7 @@ export function Profile() {
             const got = st.achievements.includes(a.id);
             return (
               <div key={a.id} className={`badge-tile ${got ? 'got' : ''}`}>
-                <span className="medal" aria-hidden="true">{a.label.split(' ').map((w) => w[0]).join('').slice(0, 2)}</span>
+                <Medal id={a.id} got={got} />
                 <span>
                   <span style={{ display: 'block', fontWeight: 700, color: got ? 'var(--ink)' : 'var(--ink-3)' }}>{a.label}</span>
                   <span className="t-small quiet">{a.desc}</span>

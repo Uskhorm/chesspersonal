@@ -275,6 +275,26 @@ describe('flow additions and context restoration', () => {
     hook.effects = [];
     return useLearnFlow(s.analysis, s.userColor);
   }
+  it('keeps replay captions on the played move and arrows on the next move, including rewind', () => {
+    const analysis = game();
+    const fen = 'rn3rk1/3pppbp/b4np1/1BpPP3/Pq6/2N5/1PQB1PPP/R3K1NR b KQ - 0 12';
+    const line = ['Bxb5', 'Nxb5', 'Qe4+', 'Qxe4'];
+    analysis.moves = [{ ...analysis.moves[1], fenBefore: fen, bestLineSan: line, bestSan: 'Bxb5', bestUci: 'a6b5' }];
+    let s = learnReducer(createInitialLearnState(analysis, 'b'), { type: 'giveUp' });
+    s = learnReducer(s, { type: 'beginReplay' });
+    const c = new Chess(fen);
+    const moves = line.map(san => c.move(san));
+    for (const step of [0, 1, 2, 3, 4, 2, 0]) {
+      s = learnReducer(s, { type: 'replayTo', step });
+      const view = flow(s), played = moves[step - 1], next = moves[step];
+      expect(view.board.fen).toBe(played?.after ?? fen);
+      expect(view.board.lastMove).toEqual(played ? [played.from, played.to] : undefined);
+      expect(view.board.arrows).toEqual(next ? [{ from: next.from, to: next.to, brush: 'best' }] : []);
+      expect(view.plan?.lineExplained[step - 1]?.san).toBe(played?.san);
+      if (step === 1) expect(view.plan?.lineExplained[step - 1]?.note).toBe('Takes the bishop on b5.');
+      if (step === 3) expect(view.plan?.lineExplained[step - 1]?.note).toBe('Forks the king on e1 and queen on c2.');
+    }
+  });
   it.each(['intro', 'solve', 'wrong', 'solved', 'explain', 'replay', 'confirm', 'complete'] as const)('restores the exact %s board and progress after browsing', phase => {
     let s = attempt(learnReducer(start(), { type: 'hint' }), true);
     s = { ...s, phase, progress: s.progress.map((p, i) => i ? p : { ...p, phase, replayStep: 1, replaySeen: 1 }) };

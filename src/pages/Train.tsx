@@ -176,7 +176,6 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
   return (
     <div className="page">
       <div className="trainer-head">
-        <a className="key flat sm" href="#/train">Quit</a>
         {mode === 'rush' ? (
           <div className="row grow" style={{ gap: 18 }}>
             <span className="lives" aria-label={`${t.lives} lives`}>{[0, 1, 2].map((i) => <i key={i} className={i < t.lives ? '' : 'gone'} />)}</span>

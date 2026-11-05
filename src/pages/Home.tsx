@@ -170,7 +170,7 @@ export function Home() {
         {syncErr && <p className="err" style={{ marginBottom: 10 }}>{syncErr}</p>}
         <div className="tape">
           {games.slice(0, 8).map((g) => (
-            <TapeRow key={g.id} g={g} />
+            <TapeRow key={g.id} g={g} curve={analyses.find((a) => a.gameId === g.id)?.winCurve} />
           ))}
           {!games.length && <p className="quiet">{syncing ? 'Fetching your games from chess.com…' : 'No games in the last two months yet.'}</p>}
         </div>

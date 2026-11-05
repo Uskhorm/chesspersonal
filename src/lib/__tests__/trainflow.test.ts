@@ -2,8 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Chess } from 'chess.js';
 vi.mock('../engine', () => ({ engine: { analyse: vi.fn() } }));
 vi.mock('../verify', () => ({ verifyMove: vi.fn() }));
+const hook = vi.hoisted(() => ({ state: undefined as TrainState | undefined }));
+vi.mock('react', () => ({
+  useReducer: () => [hook.state, vi.fn()],
+  useRef: (value: unknown) => ({ current: value }),
+  useMemo: (make: () => unknown) => make(),
+  useCallback: (fn: unknown) => fn,
+  useEffect: () => {},
+}));
 import { verifyMove } from '../verify';
-import { checkTrainMove, createTrainState, trainReducer, trainSummary, fetchTransferPuzzle, type TrainState, type TrainItem } from '../trainflow';
+import { checkTrainMove, createTrainState, trainReducer, trainSummary, fetchTransferPuzzle, useTrainSession, type TrainState, type TrainItem } from '../trainflow';
 import * as lichess from '../lichess';
 import { fetchPuzzle, prefetchPuzzles } from '../lichess';
 
@@ -16,6 +24,37 @@ async function play(s: TrainState, from: string, to: string, promotion?: string)
 async function fail() { return play(await play(createTrainState('session', [item], 0), 'd2', 'd4'), 'd2', 'd4'); }
 
 describe('training state machine', () => {
+  it.each(['drill', 'puzzle'] as const)('aligns %s replay board, played caption and next arrow across jumps and rewind', kind => {
+    const fen = 'rn3rk1/3pppbp/b4np1/1BpPP3/Pq6/2N5/1PQB1PPP/R3K1NR b KQ - 0 12';
+    const line = ['Bxb5', 'Nxb5', 'Qe4+', 'Qxe4'];
+    const c = new Chess(fen), played = c.move('Nh5');
+    const moment: import('../types').AnalysedMove = {
+      ply: 24, color: 'b', san: played.san, uci: played.lan, from: played.from, to: played.to,
+      fenBefore: fen, fenAfter: c.fen(), scoreBefore: {}, scoreAfter: {}, winBefore: 50, winAfter: 10,
+      epLoss: .4, accuracy: 10, bestUci: 'a6b5', bestSan: 'Bxb5', bestLineSan: line,
+      replyLineSan: [], cls: 'blunder', motifs: [], comment: '',
+    };
+    const replay = new Chess(fen), moves = line.map(san => replay.move(san));
+    const own: TrainItem = kind === 'drill'
+      ? { kind, drill: { id: 'replay', fen, bestUci: 'a6b5', bestSan: 'Bxb5', motifs: [] } as unknown as import('../types').Drill, move: moment }
+      : { kind, p: { id: 'replay', fen, solution: moves.map(m => m.lan), themes: [], rating: 1000 } };
+    let s = trainReducer(createTrainState('session', [own]), { type: 'giveUp', now: 0 });
+    s = trainReducer(trainReducer(s, { type: 'explain' }), { type: 'replay' });
+    for (const step of [0, 1, 2, 3, 4, 2, 0]) {
+      s = trainReducer(s, { type: 'replayTo', step });
+      hook.state = s;
+      const view = useTrainSession('session', { items: [own] });
+      const last = moves[step - 1], next = moves[step];
+      expect(view.board.fen).toBe(last?.after ?? fen);
+      expect(view.board.lastMove).toEqual(last ? [last.from, last.to] : undefined);
+      expect(view.board.arrows).toEqual(next ? [{ from: next.from, to: next.to, brush: 'best' }] : []);
+      if (kind === 'drill') {
+        expect(view.plan?.lineExplained[step - 1]?.san).toBe(last?.san);
+        if (step === 1) expect(view.plan?.lineExplained[step - 1]).toMatchObject({ note: 'Takes the bishop on b5.' });
+        if (step === 3) expect(view.plan?.lineExplained[step - 1]).toMatchObject({ note: 'Forks the king on e1 and queen on c2.' });
+      }
+    }
+  });
   it.each(['session', 'leak'] as const)('allows one puzzle retry in %s without recording a failure', async (mode) => {
     let s = await play({ ...createTrainState(mode, [item]), combo: 3 }, 'd2', 'd4');
     expect(s).toMatchObject({ phase: 'solve', attempts: 1, results: [] });

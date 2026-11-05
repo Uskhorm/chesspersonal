@@ -115,7 +115,7 @@ describe('human coaching from legal engine lines', () => {
       expect(first[2].highlight?.arrow).toEqual([m.bestUci.slice(0, 2), m.bestUci.slice(2, 4)]);
       for (const hint of first) for (const san of m.bestLineSan) expect(hint.text).not.toContain(san);
     }
-    expect(hints(queen())[1].text).toBe('Win the rook on d8.');
+    expect(hints(queen())[1].text).toBe('Take the rook on d8 with check.');
   });
 
   it('derives transferable rules from the tactic', () => {
@@ -149,7 +149,19 @@ describe('human coaching from legal engine lines', () => {
     expect(explainMove(m).headline).toBe('Better: Bxb5.');
     expect(explainMove(m).detail).toContain('It takes the bishop, and after Nxb5 your Qe4+ forks');
     expect(bestMovePlan(m).idea).toContain('king on e1 and queen on c2');
-    expect(hints(m)[1].text).toContain('check that forks');
+    expect(hints(m)[1].text).toContain('Take the bishop on b5 first');
     expectNatural(m);
+  });
+
+  it('teaches the preparatory bishop capture before the later queen fork', () => {
+    const m = fixture('rn3rk1/3pppbp/b4np1/1BpPP3/Pq6/2N5/1PQB1PPP/R3K1NR b KQ - 0 12',
+      'Nh5', ['Bxb5', 'Nxb5', 'Qe4+', 'Qxe4']);
+    const hs = hints(m);
+    expect(hs[0].text).toBe('Look at your bishop on a6.');
+    expect(hs[0].highlight?.squares).toEqual(['a6']);
+    expect(hs[1].text).toBe('Take the bishop on b5 first, so a later queen check can fork the king on e1 and queen on c2.');
+    expect(hs[1].text).not.toContain('it was guarding the e4 square');
+    expect(hs[1].text).not.toMatch(/Look for a check|Give check|Check their king|Bxb5|Qe4/);
+    expect(hs[2].highlight?.arrow).toEqual(['a6', 'b5']);
   });
 });

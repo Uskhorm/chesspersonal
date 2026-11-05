@@ -10,9 +10,21 @@ export type FxEvent =
 export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
 
 type Listener = (e: FxEvent) => void;
+
+/** While a training session is in focus, non-essential toasts wait until it ends. */
+let quiet = false;
+const held: FxEvent[] = [];
+export function setQuiet(q: boolean) {
+  quiet = q;
+  if (!q) for (const e of held.splice(0)) emit(e);
+}
 const listeners = new Set<Listener>();
 
 export function emit(e: FxEvent) {
+  if (quiet && e.type === 'toast') {
+    held.push(e);
+    return;
+  }
   for (const l of listeners) l(e);
 }
 

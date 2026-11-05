@@ -95,7 +95,7 @@ function Summary({ a, game, onBrowse }: { a: GameAnalysis; game: StoredGame; onB
           {result}, {game.timeClass}. {a.opening ?? 'Unnamed opening'}
         </p>
         <h1 className="display t-hero" style={{ marginTop: 6 }}>
-          {moments.length === 0 ? 'Clean game' : `${moments.length} moment${moments.length > 1 ? 's' : ''} to learn from`}
+          {moments.length === 0 ? 'No costly mistakes' : `${moments.length} of your moves to learn from`}
         </h1>
       </header>
       <div className="summary-grid">

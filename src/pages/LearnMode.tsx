@@ -138,8 +138,11 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
         <span className="faint num t-small">{flow.results.filter(Boolean).length} of {moments.length} done</span>
       </div>
 
-      <div className="review">
+      <div className="review learn">
         <div className="stage" ref={stageRef}>
+          <p className="learn-compact">
+            <ClassIcon cls={m.cls} size={16} white /> {moveNo} {m.san} was a {CLASS_LABEL[m.cls].toLowerCase()}. <b>{TITLE[phase]}</b>
+          </p>
           <div className="board-line">
             <EvalBar score={answerShown ? m.scoreBefore : m.scoreAfter} orientation={board.orientation} />
             <Board

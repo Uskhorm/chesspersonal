@@ -82,7 +82,7 @@ export function Topbar({ page, focus }: { page: string; focus?: boolean }) {
               </svg>
               <Icon.flame />
             </span>
-            <span className="display num">{streak.count}</span>
+            {streak.count > 0 ? <span className="display num">{streak.count}</span> : <span className="t-small sb-hide-m" style={{ fontWeight: 650 }}>Start a streak</span>}
 
           </div>
           <button ref={chestRef} className={`sb-cell sb-chest ${chests ? 'has' : ''}`} onClick={() => chests && openChest()} title={chests ? 'Open a chest' : 'Earn chests from quests, levels and achievements'} aria-label={`${chests} chests`}>

@@ -6,6 +6,7 @@ import { startAutoSync } from './lib/sync';
 import { sfx } from './lib/sound';
 import { useAuth } from './lib/auth';
 import { scheduleStreakReminder } from './lib/pwa';
+import { setQuiet } from './lib/bus';
 import { db } from './lib/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { isMastered } from './lib/srs';
@@ -34,6 +35,10 @@ export function App() {
   const route = useHash();
   const token = useAuth((s) => s.token);
   const routeKey = route.join('/');
+  const inSession = (route[0] === 'review' && route[2] === 'learn') || (route[0] === 'train' && ['session', 'leak', 'rush'].includes(route[1]));
+  useEffect(() => {
+    setQuiet(inSession);
+  }, [inSession]);
 
   useEffect(() => {
     ensureDay();
