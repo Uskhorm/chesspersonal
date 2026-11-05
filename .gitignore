@@ -1,0 +1,8 @@
+node_modules
+dist
+.vercel
+public/engine
+*.log
+.env*
+.DS_Store
+.playwright-mcp

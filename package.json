@@ -1,0 +1,37 @@
+{
+  "name": "chesspersonal",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "postinstall": "node scripts/copy-engine.mjs"
+  },
+  "dependencies": {
+    "@lichess-org/chessground": "^10.5.0",
+    "animejs": "^4.5.0",
+    "canvas-confetti": "^1.9.4",
+    "chess.js": "^1.4.0",
+    "dexie": "^4.4.7",
+    "dexie-react-hooks": "^4.4.0",
+    "lucide-react": "^1.69.0",
+    "motion": "^14.9.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "stockfish": "^19.0.1",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  },
+  "license": "GPL-3.0-or-later",
+  "description": "Open-source chess game review + spaced-repetition training from your own chess.com games"
+}
