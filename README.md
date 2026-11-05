@@ -1,57 +1,42 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<img src="public/icon.svg" width="64" height="64" alt="">
 
-# ChessPersonal
+# Hindsight
 
-**▶ Live: https://uskhorm.github.io/chesspersonal/**
+**See what you missed.** Open-source chess game review that turns every mistake you make into training.
 
-**An open-source, in-house version of chess game review — plus a training system built from your own mistakes.**
+**▶ Live: https://uskhorm.github.io/hindsight/**
 
-Connect your chess.com username, and every game you finish is pulled in, analysed by Stockfish 19 in your browser, and broken down move by move into **Brilliant · Great · Best · Excellent · Good · Book · Inaccuracy · Mistake · Miss · Blunder**. Each mistake you make becomes a flashcard you drill on spaced repetition until you stop making it.
+Sign in with your chess.com username and a passkey. No password, no OAuth. Every game you finish is pulled in and reviewed by Stockfish 19 in your browser. Each mistake, miss and blunder becomes a position you re-solve on a spaced-repetition schedule until you stop making it. Your progress syncs to every browser you sign in on.
 
-## Features
+## What it does
 
-### Game review
-- **Auto-sync from chess.com**: polls the public API every minute while the app is open and reviews new games automatically. No password is needed; games are public by username.
-- **Stockfish 19 (WASM)** runs locally in parallel Web Workers (up to 4). **Lichess cloud eval** is used for opening positions where it's available.
-- **Expected-points move classification**: Brilliant (sound sacrifices, detected with static exchange evaluation), Great (only-moves that change the outcome), Miss (failing to punish your opponent's error), Book (≈8,000 positions from the lichess opening book), and the rest.
-- **Accuracy and estimated game rating** per side, plus accuracy by phase (opening / middlegame / endgame).
-- **Coach panel** that explains each move: what it hangs, mates it allows, the best line, and motif tags.
-- **Retry** any of your mistakes. Different good moves also count, because answers are checked by the engine.
+**Game review**
+- Stockfish 19 (WASM) runs in parallel Web Workers, with Lichess cloud eval for opening positions.
+- Moves are classified as Brilliant · Great · Best · Excellent · Good · Book · Inaccuracy · Mistake · Miss · Blunder. The thresholds are calibrated against chess.com accuracies; the harness is in `scripts/calibrate`.
+- The "game tape" timeline lets you scrub through the eval curve. Each move gets a verdict stamp, plus coaching that puts the answer first and gives a one-line rule you can reuse.
 
-### Learning system
-| Technique | How it's used |
-|---|---|
-| **Spaced repetition** (SM-2) | Every mistake, miss and blunder becomes a card that comes back just before you'd forget it |
-| **Retrieval practice** | *Learn mode* makes you find the better move yourself before showing the answer |
-| **Interleaving** | Sessions rotate across motifs instead of drilling one pattern in a block |
-| **85% rule** (Wilson et al., 2019) | Session difficulty adapts toward an ~85% success rate |
-| **Deliberate practice** | The *Elo leak report* ranks your points lost by motif (hanging pieces, missed forks, missed mates, time trouble…) and targets Lichess puzzles at your #1 leak |
+**Learning loop**
+- **Learn mode**: find the better move yourself first. Hints go from piece, to idea, to arrow. Then the answer and its rule, a step-through of the line, and you play it yourself. You can browse, skip and move between moments at any time.
+- **FSRS spaced repetition** (`ts-fsrs`) of your own mistakes. Grading accounts for hints, and sessions interleave motifs and adapt toward roughly 85% success.
+- **Transfer practice**: after each drill you get a Lichess puzzle with the same motif, but a new position.
+- **Elo leak report** and opening-repertoire leaks, with training aimed at your biggest weakness.
+- **Rewards**: XP, streaks with freezes, daily quests, achievements and milestone chests. They're built so they follow what you actually recall, not clicking through.
 
-### The fun part
-XP and levels, daily quests, streaks with streak freezes, loot chests with random rarity drops (board-theme unlocks), combo multipliers with rising-pitch sound, critical-hit XP, a training rating that moves with every solve, Blunder Rush (3 min, 3 lives), achievements, and particle and confetti effects on nearly every click. Animations use **anime.js v4** and **Motion**, and all sounds are synthesised with WebAudio.
-
-## Stack
-React 19 · Vite · TypeScript · [chess.js](https://github.com/jhlywa/chess.js) · [chessground](https://github.com/lichess-org/chessground) · [Stockfish.js](https://github.com/nmrugg/stockfish.js) · [lichess-org/chess-openings](https://github.com/lichess-org/chess-openings) · [anime.js](https://animejs.com) · [Motion](https://motion.dev) · [canvas-confetti](https://github.com/catdad/canvas-confetti) · Dexie (IndexedDB) · Zustand
-
-APIs: [chess.com Published-Data API](https://www.chess.com/news/view/published-data-api), [Lichess cloud eval & puzzles](https://lichess.org/api).
-
-All data stays on your device (IndexedDB + localStorage). There is no backend.
+## Architecture
+- **Frontend**: React 19, Vite, TypeScript, chessground, chess.js, Dexie, Zustand, anime.js, Motion. Installable PWA with offline engine cache.
+- **Backend**: Supabase. Postgres with RLS-locked tables, plus one Edge Function (`supabase/functions/api`) for WebAuthn passkey auth (`@simplewebauthn`) and last-write-wins sync.
+- See `docs/ARCHITECTURE.md` for the module contracts.
 
 ## Run locally
 ```bash
-npm install        # also copies the Stockfish engine into public/engine
-npm run dev
+npm install          # also copies Stockfish into public/engine
+npm run dev          # http://localhost:5173
+npm test             # vitest (240 tests)
 ```
-Regenerate the opening book with `node scripts/build-openings.mjs`.
+Set `VITE_API_URL` in `.env` to your Edge Function URL. Deploy the backend with `supabase db push` and `supabase functions deploy api --no-verify-jwt`; details are in `supabase/functions/api/README.md`.
 
 ## Deploy
-It's a static site, so `npm run build` outputs `dist/`.
-- **GitHub Pages**: deployed automatically on every push to `master` (`.github/workflows/pages.yml`).
-- **Vercel**: `vercel.json` is included, so you can import the repo or run `vercel --prod`.
+- **GitHub Pages**: automatic on every push to `master` (`.github/workflows/pages.yml`).
+- **Vercel**: `vercel.json` is included. Passkeys are bound to the domain, so changing hosts means adding a passkey on the new domain.
 
-## Notes
-- Classifications follow the publicly described expected-points model, but the thresholds are this project's own, so results won't match chess.com exactly.
-- Not affiliated with chess.com or Lichess.
-
-## License
-GPL-3.0, because the bundled Stockfish engine is GPL-3.0. See [LICENSE](LICENSE).
+Not affiliated with chess.com or Lichess. GPL-3.0, because the bundled Stockfish engine is GPL-3.0.
