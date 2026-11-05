@@ -1,5 +1,5 @@
 {
-  "name": "chesspersonal",
+  "name": "hindsight",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,10 +8,12 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "postinstall": "node scripts/copy-engine.mjs"
+    "postinstall": "node scripts/copy-engine.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@lichess-org/chessground": "^10.5.0",
+    "@simplewebauthn/browser": "^14.0.0",
     "animejs": "^4.5.0",
     "canvas-confetti": "^1.9.4",
     "chess.js": "^1.4.0",
@@ -22,6 +24,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "stockfish": "^19.0.1",
+    "ts-fsrs": "^6.0.0",
     "zustand": "^5.0.16"
   },
   "devDependencies": {
@@ -30,8 +33,11 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
+    "@vitest/coverage-v8": "^5.1.0",
+    "fake-indexeddb": "^6.2.7",
     "typescript": "^7.0.2",
-    "vite": "^8.3.6"
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
   },
   "license": "GPL-3.0-or-later",
   "description": "Open-source chess game review + spaced-repetition training from your own chess.com games"
