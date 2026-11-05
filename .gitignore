@@ -7,4 +7,6 @@ public/engine
 .env.supabase*
 .DS_Store
 .playwright-mcp
+.playwright-cli
+output/playwright
 supabase/.temp

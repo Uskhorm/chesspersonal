@@ -15,10 +15,11 @@ import { EvalBar } from '../components/EvalBar';
 import { ClassIcon, CLASS_LABEL } from '../components/ClassIcon';
 import { MoveInput } from '../components/MoveInput';
 import { Points } from '../components/Explain';
-import { HintDots, LineReplay, Status, TurnChip, useReplayStart, useStickyHighlights } from '../components/Puzzle';
+import { HintDots, LineReplay, Status, useReplayStart, useStickyHighlights } from '../components/Puzzle';
 import { Ticker } from '../components/Ticker';
-import { cap, playedPhrase, plainMove } from '../components/plain';
+import { cap, plainMove } from '../components/plain';
 import { spring, staggerDelay } from '../components/motion';
+import { ContextLegend, mistakeArrow, useDrillContext, useIntroMove } from '../components/MoveContext';
 
 const RESULT_LABEL: Record<LearnResult, string> = { 'first-try': 'Found it', 'with-help': 'With help', failed: 'Shown' };
 
@@ -86,7 +87,7 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
     {
       ArrowLeft: () => (phase === 'replay' ? actions.replayStep(-1) : phase !== 'checking' && phase !== 'complete' && actions.stepContext(-1)),
       ArrowRight: () => (phase === 'replay' ? actions.replayStep(1) : phase !== 'checking' && phase !== 'complete' && actions.stepContext(1)),
-      h: () => solving && flow.hintsUsed < 3 && actions.nextHint(),
+      h: () => { if (solving && flow.hintsUsed < 3) { intro.cancel(); actions.nextHint(); } },
       s: () => solving && actions.giveUp(),
       Enter: () => {
         if (phase === 'explain' || phase === 'solved') actions.beginReplay();
@@ -97,6 +98,10 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
   );
 
   const replayStart = useReplayStart(phase === 'replay', flow.replay.step, board.fen, index);
+  const mm0 = moments[index];
+  const ctx = useDrillContext(mm0 ? { gameId: game.id, ply: mm0.ply, fen: mm0.fenBefore, playedSan: mm0.san, color: mm0.color } : undefined);
+  const atMoment = !!mm0 && flow.contextPly === mm0.ply - 1 && board.fen === mm0.fenBefore;
+  const intro = useIntroMove(index, ctx, board.fen, solving && atMoment, flow.attempts === 0 && flow.hintsUsed === 0);
   const hintSquares = useStickyHighlights(board.highlights, phase === 'solve' || phase === 'wrong' || phase === 'checking' || phase === 'intro', `${index}:${flow.contextPly}`);
 
   if (!moments.length) {
@@ -119,7 +124,7 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
   const bestPlain = m ? plainMove(m.fenBefore, m.bestSan, game.userColor) : '';
 
   return (
-    <div className="page wide">
+    <div className="page wide visual-trainer">
       <div className="boardpage">
         <div className="boardpage-main board-bleed" ref={stageRef}>
           <div className="trainer-top">
@@ -146,16 +151,23 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
               {doneCount} of {moments.length} done
             </span>
           </div>
+          {!answerShown && atMoment && phase !== 'complete' && (
+            <div className="ctx-mobile">
+              <ContextLegend ctx={ctx} cls={m.cls} turn={m.color} onReplay={solving ? intro.replay : undefined} onReplayMine={solving ? intro.replayMine : undefined} showing={intro.showing} compact />
+            </div>
+          )}
           <div className="board-row">
             <EvalBar score={answerShown ? m.scoreBefore : undefined} orientation={board.orientation} />
             <Board
-              fen={board.fen}
+              fen={atMoment ? intro.fen : board.fen}
               orientation={board.orientation}
-              lastMove={board.lastMove}
-              arrows={board.arrows}
+              labelSquares
+              lastMoveTone={intro.showing === 'mine' ? 'mine' : 'theirs'}
+              lastMove={intro.animating ? intro.lastMove : board.lastMove ?? (atMoment ? intro.lastMove : undefined)}
+              arrows={intro.animating ? intro.showing === 'mine' ? mistakeArrow(ctx) : [] : atMoment && ['solve', 'intro', 'checking', 'wrong', 'explain'].includes(phase) ? [...mistakeArrow(ctx), ...board.arrows] : board.arrows}
               highlight={hintSquares}
               marks={pointMarks}
-              movable={board.movable}
+              movable={board.movable && !intro.animating}
               feedback={fb}
               nonce={flow.attempts * 1000 + index}
               sound
@@ -189,7 +201,7 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
                     <CornerUpLeft /> Back to the moment
                   </button>
                 ) : (
-                  board.movable && <MoveInput fen={board.fen} onMove={(f, t, p) => (phase === 'confirm' ? actions.confirmMove(f, t, p) : void actions.submitMove(f, t, p))} />
+                  board.movable && !intro.animating && <MoveInput fen={board.fen} onMove={(f, t, p) => (phase === 'confirm' ? actions.confirmMove(f, t, p) : void actions.submitMove(f, t, p))} />
                 )}
               </div>
             ) : null}
@@ -212,12 +224,11 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
                   </div>
 
                   {!answerShown ? (
-                    <>
-                      <p className="prompt">
-                        You <span className="played">{playedPhrase(m.fenBefore, m.san)}</span> here. Find a better move.
-                      </p>
-                      <TurnChip color={m.color} />
-                    </>
+                    atMoment ? (
+                      <div className="ctx-desktop">
+                        <ContextLegend ctx={ctx} cls={m.cls} turn={m.color} onReplay={solving ? intro.replay : undefined} onReplayMine={solving ? intro.replayMine : undefined} showing={intro.showing} />
+                      </div>
+                    ) : <p className="quiet">Browse the moves, then return to the moment to try again.</p>
                   ) : (
                     <p className="headline">{ex?.headline ?? cap(bestPlain)}</p>
                   )}
@@ -264,7 +275,7 @@ export function LearnMode({ a, game }: { a: GameAnalysis; game: StoredGame }) {
                   <div className="panel-actions">
                     {solving && (
                       <>
-                        <button className="btn" onClick={actions.nextHint} disabled={flow.hintsUsed >= 3}>
+                        <button className="btn" onClick={() => { intro.cancel(); actions.nextHint(); }} disabled={flow.hintsUsed >= 3}>
                           <Lightbulb /> {flow.hintsUsed === 0 ? 'Hint' : flow.hintsUsed < 3 ? 'More specific' : 'No more hints'} <span className="kbd hide-m">H</span>
                         </button>
                         <button className="btn ghost" onClick={actions.giveUp}>

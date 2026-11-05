@@ -21,6 +21,7 @@ import { PageSkeleton, Skeleton } from '../components/Skeleton';
 import { Ticker } from '../components/Ticker';
 import { playedPhrase } from '../components/plain';
 import { enter, spring, staggerDelay } from '../components/motion';
+import { ContextLegend, mistakeArrow, useDrillContext, useIntroMove } from '../components/MoveContext';
 
 export function Train({ mode }: { mode?: string }) {
   const [run, setRun] = useState(0);
@@ -210,7 +211,7 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
 
   useHotkeys(
     {
-      h: () => solving && mode !== 'rush' && t.hintsUsed < 3 && actions.nextHint(),
+      h: () => { if (solving && mode !== 'rush' && t.hintsUsed < 3) { intro.cancel(); actions.nextHint(); } },
       s: () => solving && mode !== 'rush' && actions.giveUp(),
       Enter: () => {
         if (phase === 'solved') actions.next();
@@ -223,6 +224,9 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
     [phase, t.hintsUsed, mode],
   );
 
+  const drill = item?.kind === 'drill' ? item.drill : undefined;
+  const ctx = useDrillContext(drill);
+  const intro = useIntroMove(t.index, ctx, board.fen, phase === 'solve', t.attempts === 0 && t.hintsUsed === 0);
   const replayStart = useReplayStart(phase === 'replay', t.replay.step, board.fen, t.index);
   const hintSquares = useStickyHighlights(board.highlights, phase === 'solve' || phase === 'checking', t.index);
 
@@ -247,7 +251,7 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
   const onMove = (f: string, to: string, p?: string) => void (phase === 'confirm' ? actions.confirmMove(f, to, p) : actions.submitMove(f, to, p));
 
   return (
-    <div className="page wide">
+    <div className="page wide visual-trainer">
       <div className="boardpage">
         <div className="boardpage-main board-bleed" ref={stageRef}>
           <div className="trainer-top">
@@ -278,15 +282,22 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
               <span className="display num">{t.combo}</span> in a row
             </motion.span>
           </div>
+          {drill && ['solve', 'checking', 'wrong'].includes(phase) && (
+            <div className="ctx-mobile">
+              <ContextLegend ctx={ctx} cls={drill.cls} turn={turn} onReplay={solving ? intro.replay : undefined} onReplayMine={solving ? intro.replayMine : undefined} showing={intro.showing} compact />
+            </div>
+          )}
           <div className="board-row">
             <Board
-              fen={board.fen}
+              fen={intro.fen}
               orientation={board.orientation}
-              lastMove={board.lastMove}
-              arrows={board.arrows}
+              labelSquares
+              lastMoveTone={intro.showing === 'mine' ? 'mine' : 'theirs'}
+              lastMove={intro.animating ? intro.lastMove : board.lastMove ?? (solving || phase === 'checking' || phase === 'wrong' ? intro.lastMove : undefined)}
+              arrows={intro.animating ? intro.showing === 'mine' ? mistakeArrow(ctx) : [] : ['solve', 'checking', 'wrong', 'explain'].includes(phase) ? [...mistakeArrow(ctx), ...board.arrows] : board.arrows}
               highlight={hintSquares}
               marks={pointMarks}
-              movable={board.movable}
+              movable={board.movable && !intro.animating}
               feedback={fb}
               nonce={t.attempts * 1000 + t.index}
               sound
@@ -297,7 +308,7 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
             {phase === 'replay' && t.plan ? (
               <LineReplay key={t.index} step={t.replay.step} total={t.replay.total} goTo={actions.replayTo} line={t.plan.line} startFen={replayStart} perspective={turn} notes={t.plan.lineExplained.map((x) => (x as { note?: string }).note)} />
             ) : (
-              board.movable && (
+              board.movable && !intro.animating && (
                 <div className="under-board" style={{ marginTop: 0 }}>
                   <MoveInput fen={board.fen} onMove={onMove} />
                 </div>
@@ -326,16 +337,16 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
                 <p className="headline">{ex?.headline ?? 'Here is the idea'}</p>
               ) : (
                 <>
-                  <p className="prompt">
-                    {item.kind === 'drill' ? (
-                      <>
-                        You <span className="played">{playedPhrase(item.drill.fen, item.drill.playedSan)}</span> here, a {CLASS_LABEL[item.drill.cls].toLowerCase()}. Find a better move.
-                      </>
-                    ) : (
-                      'Find the strongest continuation.'
-                    )}
-                  </p>
-                  <TurnChip color={turn} />
+                  {item.kind === 'drill' && ['solve', 'checking', 'wrong'].includes(phase) ? (
+                    <div className="ctx-desktop">
+                      <ContextLegend ctx={ctx} cls={item.drill.cls} turn={turn} onReplay={solving ? intro.replay : undefined} onReplayMine={solving ? intro.replayMine : undefined} showing={intro.showing} />
+                    </div>
+                  ) : (
+                    <>
+                      <p className="prompt">Find the strongest continuation.</p>
+                      <TurnChip color={turn} />
+                    </>
+                  )}
                 </>
               )}
 
@@ -383,7 +394,7 @@ function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
               <div className="panel-actions">
                 {solving && mode !== 'rush' && (
                   <>
-                    <button className="btn" onClick={actions.nextHint} disabled={t.hintsUsed >= 3}>
+                    <button className="btn" onClick={() => { intro.cancel(); actions.nextHint(); }} disabled={t.hintsUsed >= 3}>
                       <Lightbulb /> {t.hintsUsed === 0 ? 'Hint' : t.hintsUsed < 3 ? 'More specific' : 'No more hints'} <span className="kbd hide-m">H</span>
                     </button>
                     <button className="btn ghost" onClick={actions.giveUp}>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Check, X } from 'lucide-react';
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
@@ -45,6 +45,9 @@ interface Props {
   /** Bump to force a resync (e.g. undo a wrong move). */
   nonce?: number;
   coordinates?: boolean;
+  /** Name the squares involved in moves, hints and explanations directly on the board. */
+  labelSquares?: boolean;
+  lastMoveTone?: 'theirs' | 'mine';
   /** Play move sounds when the position advances by one move. */
   sound?: boolean;
   /** Snap instead of animating (thumbnails). */
@@ -113,12 +116,16 @@ export function Board({
   marks = [],
   feedback,
   coordinates = true,
+  labelSquares = false,
+  lastMoveTone = 'theirs',
   sound,
   still,
   autoQueen = false,
 }: Props) {
   const el = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotion();
   const api = useRef<Api | null>(null);
+  const [boardSize, setBoardSize] = useState<{ width: number; height: number }>();
   const [promotion, setPromotion] = useState<{ orig: Key; dest: Key; color: 'white' | 'black' } | null>(null);
   const promotionPending = useRef(false);
   const [resync, setResync] = useState(0);
@@ -143,7 +150,7 @@ export function Board({
     api.current = Chessground(el.current, {
       fen,
       orientation,
-      animation: { enabled: !still, duration: 180 },
+      animation: { enabled: !still && !reducedMotion, duration: 180 },
       highlight: { lastMove: true, check: true },
       premovable: { enabled: false },
       coordinates,
@@ -151,7 +158,11 @@ export function Board({
       drawable: { enabled: true, brushes: BRUSHES },
     });
     // Chessground caches its bounds; re-measure whenever the container changes size.
-    const ro = new ResizeObserver(() => api.current?.redrawAll());
+    const ro = new ResizeObserver(() => {
+      api.current?.redrawAll();
+      const bounds = el.current?.querySelector('cg-board')?.getBoundingClientRect();
+      if (bounds) setBoardSize(size => size?.width === bounds.width && size?.height === bounds.height ? size : { width: bounds.width, height: bounds.height });
+    });
     ro.observe(el.current);
     return () => {
       ro.disconnect();
@@ -190,7 +201,7 @@ export function Board({
     }
     prevFen.current = fen;
     a.set({
-      animation: { enabled: small && !still, duration: 180 },
+      animation: { enabled: small && !still && !reducedMotion, duration: 180 },
       fen,
       orientation,
       turnColor,
@@ -228,7 +239,7 @@ export function Board({
       draggable: { enabled: !!movable && !promotionPending.current },
       selectable: { enabled: !!movable && !promotionPending.current },
     });
-  }, [fen, orientation, lastMove?.[0], lastMove?.[1], movable, turnColor, inCheck, nonce, custom, resync, autoQueen]);
+  }, [fen, orientation, lastMove?.[0], lastMove?.[1], movable, turnColor, inCheck, nonce, custom, resync, autoQueen, reducedMotion]);
 
   const arrowKey = JSON.stringify(arrows);
   useEffect(() => {
@@ -248,6 +259,18 @@ export function Board({
     return { left: `${(col + (corner ? 1 : 0)) * 12.5}%`, top: `${row * 12.5}%` };
   };
 
+  const squareLabels = new Map<string, string>();
+  if (labelSquares) {
+    for (const sq of lastMove ?? []) squareLabels.set(sq, lastMoveTone);
+    for (const arrow of arrows) {
+      const tone = arrow.brush === 'played' || arrow.brush === 'threat' ? 'mine' : arrow.brush === 'hint' ? 'hint' : 'best';
+      squareLabels.set(arrow.from, tone);
+      squareLabels.set(arrow.to, tone);
+    }
+    for (const mark of marks) squareLabels.set(mark.square, mark.tone.startsWith('bad') ? 'mine' : mark.tone.startsWith('good') ? 'best' : 'hint');
+    for (const sq of highlight) squareLabels.set(sq, 'hint');
+  }
+
   const [fb, setFb] = useState<{ kind: 'good' | 'bad'; key: number } | null>(null);
   useEffect(() => {
     if (!feedback) return;
@@ -257,8 +280,18 @@ export function Board({
   }, [feedback?.key]);
 
   return (
-    <div className={`board-wrap ${className ?? ''}`} style={{ ['--light' as string]: theme.light, ['--dark' as string]: theme.dark }}>
+    <div className={`board-wrap ${lastMoveTone === 'mine' ? 'showing-mistake' : ''} ${className ?? ''}`} style={{ ['--light' as string]: theme.light, ['--dark' as string]: theme.dark }}>
       <div ref={el} className="cg-host" tabIndex={-1} />
+      {labelSquares && (
+        <div className="board-square-labels" style={boardSize} aria-hidden="true">
+          {[...squareLabels].filter(([sq]) => /^[a-h][1-8]$/.test(sq)).map(([sq, tone]) => (
+            <div key={sq} className="board-labelled-square" style={sqPos(sq)}>
+              {arrows.some(arrow => arrow.brush === 'played' && arrow.from === sq) && <span className="board-move-owner">You</span>}
+              <span className={`board-square-name ${tone}`}>{sq}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {promotion && (
         <PromotionPicker
           square={promotion.dest}
