@@ -7,7 +7,8 @@ import { Chess, type Square } from 'chess.js';
 import type { Classification } from '../lib/types';
 import { ClassIcon } from './ClassIcon';
 import { popIn } from '../lib/fx';
-import { BOARD_THEMES, useStore } from '../lib/store';
+import { useStore } from '../lib/store';
+import { themeFor } from './themes';
 
 export interface Arrow {
   from: string;
@@ -23,9 +24,10 @@ interface Props {
   badge?: { square: string; cls: Classification } | null;
   movable?: boolean;
   onMove?: (from: string, to: string, promotion?: string) => void;
-  highlight?: string[];
+  highlight?: string[]; // squares to pulse (hints)
   className?: string;
   nonce?: number; // bump to force a resync (e.g. undo a wrong move)
+  coordinates?: boolean;
 }
 
 export function legalDests(fen: string): Map<Key, Key[]> {
@@ -51,14 +53,14 @@ function squareDiff(a: string, b: string): number {
   return n;
 }
 
-export function Board({ fen, orientation, lastMove, arrows = [], badge, movable, onMove, className, nonce }: Props) {
+export function Board({ fen, orientation, lastMove, arrows = [], badge, movable, onMove, className, nonce, highlight = [], coordinates = true }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const api = useRef<Api | null>(null);
   const badgeRef = useRef<HTMLDivElement>(null);
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
   const themeId = useStore((s) => s.settings.boardTheme);
-  const theme = BOARD_THEMES.find((t) => t.id === themeId) ?? BOARD_THEMES[0];
+  const theme = themeFor(themeId);
 
   useEffect(() => {
     if (!el.current) return;
@@ -68,7 +70,7 @@ export function Board({ fen, orientation, lastMove, arrows = [], badge, movable,
       animation: { enabled: true, duration: 220 },
       highlight: { lastMove: true, check: true },
       premovable: { enabled: false },
-      coordinates: true,
+      coordinates,
       drawable: {
         enabled: true,
         brushes: {
@@ -76,14 +78,20 @@ export function Board({ fen, orientation, lastMove, arrows = [], badge, movable,
           red: { key: 'r', color: '#882020', opacity: 1, lineWidth: 10 },
           blue: { key: 'b', color: '#003088', opacity: 1, lineWidth: 10 },
           yellow: { key: 'y', color: '#e68f00', opacity: 1, lineWidth: 10 },
-          best: { key: 'best', color: '#7fc241', opacity: 0.85, lineWidth: 11 },
-          played: { key: 'played', color: '#ff6b4a', opacity: 0.7, lineWidth: 9 },
-          alt: { key: 'alt', color: '#5b8def', opacity: 0.6, lineWidth: 8 },
-          hint: { key: 'hint', color: '#ffd34d', opacity: 0.8, lineWidth: 10 },
+          best: { key: 'best', color: '#5baa2e', opacity: 0.9, lineWidth: 11 },
+          played: { key: 'played', color: '#d7263d', opacity: 0.75, lineWidth: 9 },
+          alt: { key: 'alt', color: '#4c7ef3', opacity: 0.7, lineWidth: 8 },
+          hint: { key: 'hint', color: '#f2b705', opacity: 0.9, lineWidth: 10 },
         },
       },
     });
-    return () => api.current?.destroy();
+    // Chessground caches its bounds; re-measure whenever the container changes size.
+    const ro = new ResizeObserver(() => api.current?.redrawAll());
+    ro.observe(el.current);
+    return () => {
+      ro.disconnect();
+      api.current?.destroy();
+    };
   }, []);
 
   const turnColor = fen.split(' ')[1] === 'w' ? 'white' : 'black';
@@ -134,19 +142,21 @@ export function Board({ fen, orientation, lastMove, arrows = [], badge, movable,
     if (badge) popIn(badgeRef.current);
   }, [badge?.square, badge?.cls, fen]);
 
-  const badgePos = badge
-    ? (() => {
-        const f = badge.square.charCodeAt(0) - 97;
-        const r = Number(badge.square[1]) - 1;
-        const col = orientation === 'white' ? f : 7 - f;
-        const row = orientation === 'white' ? 7 - r : r;
-        return { left: `${(col + 1) * 12.5}%`, top: `${row * 12.5}%` };
-      })()
-    : null;
+  const sqPos = (sq: string, corner = false) => {
+    const f = sq.charCodeAt(0) - 97;
+    const r = Number(sq[1]) - 1;
+    const col = orientation === 'white' ? f : 7 - f;
+    const row = orientation === 'white' ? 7 - r : r;
+    return { left: `${(col + (corner ? 1 : 0)) * 12.5}%`, top: `${row * 12.5}%` };
+  };
+  const badgePos = badge ? sqPos(badge.square, true) : null;
 
   return (
     <div className={`board-wrap ${className ?? ''}`} style={{ ['--light' as string]: theme.light, ['--dark' as string]: theme.dark }}>
       <div ref={el} className="cg-host" />
+      {highlight.map((sq) => (
+        <div key={sq} className="board-hl" style={sqPos(sq)} />
+      ))}
       {badge && badgePos && (
         <div ref={badgeRef} className="board-badge" style={badgePos} key={badge.square + badge.cls + fen}>
           <ClassIcon cls={badge.cls} size={34} />

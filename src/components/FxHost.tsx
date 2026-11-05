@@ -4,7 +4,6 @@ import { animate, createTimeline, spring } from 'animejs';
 import { onFx, type FxEvent, type Rarity } from '../lib/bus';
 import { burst, confettiBurst, fireworks, floatText, pop } from '../lib/fx';
 import { sfx } from '../lib/sound';
-import { useStore } from '../lib/store';
 
 interface Toast {
   id: number;
@@ -14,7 +13,12 @@ interface Toast {
   onClick?: () => void;
 }
 
-const RARITY_COLOR: Record<Rarity, string> = { common: '#a7b0d8', rare: '#4da3ff', epic: '#b26bff', legendary: '#ffc83d' };
+const RARITY: Record<Rarity, { color: string; word: string }> = {
+  common: { color: '#c9d2e3', word: 'Common' },
+  rare: { color: '#4c7ef3', word: 'Rare' },
+  epic: { color: '#b86bff', word: 'Epic' },
+  legendary: { color: '#f2b705', word: 'Legendary' },
+};
 
 export function FxHost() {
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -25,19 +29,19 @@ export function FxHost() {
     let id = 0;
     const push = (t: Omit<Toast, 'id'>) => {
       const tid = ++id;
-      setToasts((x) => [...x.slice(-3), { ...t, id: tid }]);
-      setTimeout(() => setToasts((x) => x.filter((y) => y.id !== tid)), 4800);
+      setToasts((x) => [...x.slice(-2), { ...t, id: tid }]);
+      setTimeout(() => setToasts((x) => x.filter((y) => y.id !== tid)), 4600);
     };
     return onFx((e: FxEvent) => {
       switch (e.type) {
         case 'xp': {
           const hud = document.getElementById('hud-xp')?.getBoundingClientRect();
           const x = e.x ?? (hud ? hud.left + hud.width / 2 : window.innerWidth / 2);
-          const y = e.y ?? (hud ? hud.bottom + 10 : 80);
-          floatText(e.crit ? `CRIT! +${e.amount} XP` : `+${e.amount} XP`, x, y, e.crit ? '#ff6bd6' : '#ffd34d', e.crit);
-          if (e.crit) burst(x, y, '#ff6bd6', 16, 90);
+          const y = e.y ?? (hud ? hud.bottom + 18 : 80);
+          floatText(e.crit ? `Double! +${e.amount}` : `+${e.amount}`, x, y, e.crit ? '#b86bff' : '#6b4f00', e.crit);
+          if (e.crit) burst(x, y, '#b86bff', 14, 70);
           sfx.xp();
-          pop(document.getElementById('hud-xp'), 1.15);
+          pop(document.getElementById('hud-xp'), 1.08);
           break;
         }
         case 'levelup':
@@ -45,15 +49,14 @@ export function FxHost() {
             setLevel({ level: e.level, title: e.title });
             sfx.levelUp();
             fireworks();
-          }, 700);
+          }, 600);
           break;
         case 'quest':
-          push({ text: `Quest complete: ${e.label} (+${e.reward} XP)`, emoji: '🏆', tone: 'good' });
+          push({ text: `Quest done: ${e.label}. +${e.reward} XP`, emoji: '✓', tone: 'good' });
           sfx.correct();
-          confettiBurst(['#ffd34d', '#ff9a3c'], 0.6, { x: 0.85, y: 0.9 });
           break;
         case 'achievement':
-          push({ text: `Achievement unlocked: ${e.label} — chest earned!`, emoji: e.emoji, tone: 'good' });
+          push({ text: `Achievement: ${e.label}. You earned a chest.`, emoji: '★', tone: 'good' });
           sfx.great();
           break;
         case 'chest':
@@ -68,23 +71,23 @@ export function FxHost() {
 
   return (
     <>
-      <div className="toasts">
+      <div className="toasts" aria-live="polite">
         <AnimatePresence>
           {toasts.map((t) => (
             <motion.div
               key={t.id}
               layout
-              initial={{ opacity: 0, x: 80, scale: 0.8 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 80, scale: 0.8 }}
-              transition={{ type: 'spring', stiffness: 380, damping: 26 }}
-              className={`toast ${t.tone ?? 'info'} ${t.onClick ? 'clicky' : ''}`}
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.96 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+              className={`toast ${t.tone ?? 'info'} ${t.onClick ? 'clickable' : ''}`}
               onClick={() => {
                 t.onClick?.();
                 setToasts((x) => x.filter((y) => y.id !== t.id));
               }}
             >
-              <span className="toast-emoji">{t.emoji ?? '✨'}</span>
+              <span className="ico">{t.emoji ?? '•'}</span>
               <span>{t.text}</span>
             </motion.div>
           ))}
@@ -99,58 +102,74 @@ export function FxHost() {
 function LevelUp({ level, title, onClose }: { level: number; title: string; onClose: () => void }) {
   const num = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    animate(num.current!, { scale: [0, 1], rotate: [-25, 0], ease: spring({ bounce: 0.6, duration: 900 }) });
+    animate(num.current!, { scale: [0.2, 1], ease: spring({ bounce: 0.55, duration: 800 }) });
   }, []);
   return (
-    <motion.div className="modal-back" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}>
-      <motion.div className="modal levelup" initial={{ y: 40, scale: 0.9 }} animate={{ y: 0, scale: 1 }} exit={{ y: 40, scale: 0.9 }}>
-        <div className="levelup-rays" />
-        <div className="eyebrow">LEVEL UP</div>
-        <div className="levelup-num" ref={num}>{level}</div>
-        <div className="levelup-title">{title}</div>
-        <p className="muted">+1 chest added. Keep the streak alive!</p>
-        <button className="btn primary big" onClick={onClose}>Let's go</button>
+    <motion.div className="scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}>
+      <motion.div className="sheet" initial={{ y: 30 }} animate={{ y: 0 }} exit={{ y: 30 }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={`Level ${level}`}>
+        <p className="quiet">You reached level</p>
+        <div ref={num} className="display levelup-num num">{level}</div>
+        <h2 className="t-2" style={{ marginTop: 8 }}>{title}</h2>
+        <p className="quiet" style={{ margin: '10px 0 22px' }}>A chest has been added to your scoreboard.</p>
+        <button className="key ink big" style={{ width: '100%' }} onClick={onClose} autoFocus>
+          Keep going
+        </button>
       </motion.div>
     </motion.div>
+  );
+}
+
+function ChestSvg({ open, color }: { open: boolean; color: string }) {
+  return (
+    <svg viewBox="0 0 120 120" className="chest-box" aria-hidden="true">
+      <rect x="18" y="56" width="84" height="46" rx="8" fill="#1a2235" stroke={color} strokeWidth="4" />
+      <rect x="52" y="64" width="16" height="16" rx="3" fill={color} />
+      <g style={{ transformOrigin: '60px 56px', transform: open ? 'rotate(-28deg) translate(-6px,-10px)' : 'none', transition: 'transform 400ms cubic-bezier(.3,1.5,.5,1)' }}>
+        <path d="M18 56c0-16 12-26 42-26s42 10 42 26z" fill="#1a2235" stroke={color} strokeWidth="4" strokeLinejoin="round" />
+      </g>
+      {open && <circle cx="60" cy="50" r="22" fill={color} opacity=".35" />}
+    </svg>
   );
 }
 
 function ChestReveal({ rarity, xp, extra, onClose }: { rarity: Rarity; xp: number; extra?: string; onClose: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const r = RARITY[rarity];
   useEffect(() => {
     sfx.chest();
     const tl = createTimeline({
       onComplete: () => {
         setOpen(true);
-        confettiBurst([RARITY_COLOR[rarity], '#ffffff'], rarity === 'legendary' ? 2 : rarity === 'epic' ? 1.4 : 0.8);
+        confettiBurst([r.color, '#ffffff'], rarity === 'legendary' ? 2 : rarity === 'epic' ? 1.4 : 0.8);
         if (rarity === 'legendary') fireworks();
       },
     });
-    tl.add(box.current!, { scale: [0.2, 1], ease: spring({ bounce: 0.5, duration: 500 }) })
-      .add(box.current!, { rotate: [0, -12, 12, -16, 16, -20, 20, 0], duration: 650, ease: 'inOutSine' })
-      .add(box.current!, { scale: [1, 1.35], duration: 150, ease: 'inQuad' });
+    tl.add(box.current!, { scale: [0.3, 1], ease: spring({ bounce: 0.5, duration: 500 }) }).add(box.current!, {
+      rotate: [0, -10, 10, -14, 14, -18, 18, 0],
+      duration: 700,
+      ease: 'inOutSine',
+    });
   }, [rarity]);
-  const color = RARITY_COLOR[rarity];
   return (
-    <motion.div className="modal-back" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => open && onClose()}>
-      <motion.div className="modal chest-modal" style={{ ['--rarity' as string]: color }}>
-        <div className={`chest-glow ${open ? 'on' : ''}`} />
-        <div className="chest-box" ref={box}>{open ? '✨' : '🎁'}</div>
-        {open && (
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="chest-reward">
-            <div className="rarity" style={{ color }}>{rarity.toUpperCase()}</div>
-            <div className="chest-xp">+{xp} XP</div>
-            {extra && <div className="chest-extra">{extra}</div>}
-            <button className="btn primary" onClick={onClose}>Collect</button>
+    <motion.div className="scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => open && onClose()}>
+      <motion.div className="sheet chest-sheet" style={{ ['--rarity' as string]: r.color }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Chest">
+        <div ref={box}>
+          <ChestSvg open={open} color={r.color} />
+        </div>
+        {open ? (
+          <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+            <div className="display rarity-word">{r.word}</div>
+            <div className="display num" style={{ fontSize: 56, color: '#fff' }}>+{xp} XP</div>
+            {extra && <p style={{ marginTop: 6, fontWeight: 600 }}>{extra}</p>}
+            <button className="key gold big" style={{ width: '100%', marginTop: 20 }} onClick={onClose} autoFocus>
+              Collect
+            </button>
           </motion.div>
+        ) : (
+          <p style={{ opacity: 0.7 }}>Opening…</p>
         )}
       </motion.div>
     </motion.div>
   );
-}
-
-/** Opens a chest if available (used by HUD). */
-export function useOpenChest() {
-  return () => useStore.getState().openChest();
 }

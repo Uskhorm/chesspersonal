@@ -1,80 +1,84 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { AnimatePresence, motion } from 'motion/react';
-import { Chess } from 'chess.js';
 import { db, bumpActivity } from '../lib/db';
-import type { Drill } from '../lib/types';
-import { fetchPuzzle, type LichessPuzzle } from '../lib/lichess';
-import { buildSession, computeLeaks, drillRating } from '../lib/learning';
-import { gradeFrom, schedule, isMastered, dueLabel } from '../lib/srs';
+import { computeLeaks } from '../lib/learning';
+import { dueLabel, isMastered } from '../lib/srs';
+import { useTrainSession, type TrainMode, type TrainResult, type TrainSummary } from '../lib/trainflow';
 import { useStore } from '../lib/store';
-import { Board, type Arrow } from '../components/Board';
+import { Board } from '../components/Board';
 import { ClassIcon, CLASS_LABEL } from '../components/ClassIcon';
 import { burst, confettiBurst, countUp, flash, pop, shake } from '../lib/fx';
 import { sfx } from '../lib/sound';
-import { verifyMove } from '../lib/verify';
-import { MOTIF_INFO } from '../lib/classify';
-import { selfOf } from '../lib/chesscom';
-
-type Item = { kind: 'drill'; drill: Drill } | { kind: 'puzzle'; p: LichessPuzzle; tag?: string };
-type Mode = 'session' | 'leak' | 'rush';
-
-const RECENT_KEY = 'cp-recent-success';
-const recentSuccess = (): number | null => {
-  const xs: number[] = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]');
-  return xs.length >= 5 ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-};
-const pushRecent = (ok: boolean) => {
-  const xs: number[] = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]');
-  localStorage.setItem(RECENT_KEY, JSON.stringify([...xs, ok ? 1 : 0].slice(-30)));
-};
+import { dueForecast } from '../lib/insights';
 
 export function Train({ mode }: { mode?: string }) {
   const [run, setRun] = useState(0);
-  if (mode === 'session' || mode === 'leak' || mode === 'rush') return <Runner mode={mode} key={mode + run} onRestart={() => setRun((r) => r + 1)} />;
-  return <TrainMenu />;
+  if (mode === 'session' || mode === 'leak' || mode === 'rush') return <Runner key={mode + run} mode={mode} onAgain={() => setRun((r) => r + 1)} />;
+  return <TrainHome />;
 }
 
-function TrainMenu() {
+function TrainHome() {
   const drills = useLiveQuery(() => db.drills.toArray(), []) ?? [];
   const games = useLiveQuery(() => db.games.toArray(), []) ?? [];
   const analyses = useLiveQuery(() => db.analyses.toArray(), []) ?? [];
-  const leaks = useMemo(() => computeLeaks(games, analyses).filter((l) => l.motif !== 'opening' && l.motif !== 'endgame'), [games, analyses]);
-  const due = drills.filter((d) => d.due <= Date.now());
+  const leak = useMemo(() => computeLeaks(games, analyses).find((l) => l.motif !== 'opening' && l.motif !== 'endgame'), [games, analyses]);
   const rushBest = useStore((s) => s.stats.rushBest);
-  const modes = [
-    { href: '#/train/session', emoji: '🧠', title: 'Smart Session', sub: `${due.length} due · spaced repetition of YOUR mistakes, interleaved & adaptive`, color: '#5b8def', hot: due.length > 0 },
-    { href: '#/train/leak', emoji: leaks[0]?.emoji ?? '🎯', title: `Fix your #1 leak${leaks[0] ? `: ${leaks[0].label}` : ''}`, sub: 'Targeted Lichess puzzles + your own positions with the same pattern', color: '#ff9a3c', hot: false },
-    { href: '#/train/rush', emoji: '⚡', title: 'Blunder Rush', sub: `3 minutes · 3 lives · combos. Best: ${rushBest}`, color: '#ff6bd6', hot: false },
-  ];
+  const now = Date.now();
+  const due = drills.filter((d) => d.due <= now).length;
+  const mastered = drills.filter(isMastered).length;
+  const sorted = [...drills].sort((a, b) => a.due - b.due);
+
   return (
     <div className="page">
-      <h1 className="h1">Train</h1>
-      <p className="muted">Built on the most robust findings in learning science: spaced repetition, retrieval practice, interleaving, and an ~85% success sweet spot.</p>
-      <div className="mode-grid">
-        {modes.map((m, i) => (
-          <motion.a key={m.href} href={m.href} className={`mode-card ${m.hot ? 'hot' : ''}`} style={{ ['--c' as string]: m.color, ['--burst' as string]: m.color }} initial={{ opacity: 0, y: 30, rotate: -2 }} animate={{ opacity: 1, y: 0, rotate: 0 }} transition={{ delay: i * 0.08, type: 'spring', stiffness: 220, damping: 18 }} whileHover={{ y: -6, scale: 1.02 }} whileTap={{ scale: 0.96 }}>
-            <span className="mode-emoji">{m.emoji}</span>
-            <span className="mode-title">{m.title}</span>
-            <span className="mode-sub">{m.sub}</span>
-          </motion.a>
-        ))}
+      <header style={{ marginBottom: 24 }}>
+        <h1 className="display t-1">Train</h1>
+        <p className="quiet measure" style={{ marginTop: 6 }}>
+          Your own mistakes, brought back right before you'd forget them. Mixed with puzzles that target your weakest habit.
+        </p>
+      </header>
+      <div className="modes">
+        <a className="mode lead" href="#/train/session">
+          <div>
+            <h2 className="t-2">Daily session</h2>
+            <p style={{ opacity: 0.75, marginTop: 4 }}>Positions from your games, spaced for memory.</p>
+          </div>
+          <div className="row" style={{ alignItems: 'flex-end', justifyContent: 'space-between' }}>
+            <span><span className="display big num">{due}</span> <span style={{ opacity: 0.75 }}>due</span></span>
+            <span className="key go">Start</span>
+          </div>
+        </a>
+        <a className="mode" href="#/train/leak">
+          <div>
+            <h2 className="t-2">Fix a habit</h2>
+            <p className="quiet" style={{ marginTop: 4 }}>{leak ? `${leak.label}: ${Math.round(leak.share * 100)}% of the points you lose.` : 'Review a few games to find your weakest habit.'}</p>
+          </div>
+          <span className="key" style={{ alignSelf: 'flex-start' }}>Train {leak ? leak.label.toLowerCase() : 'tactics'}</span>
+        </a>
+        <a className="mode" href="#/train/rush">
+          <div>
+            <h2 className="t-2">Blunder Rush</h2>
+            <p className="quiet" style={{ marginTop: 4 }}>Three minutes, three lives. Speed builds pattern recognition.</p>
+          </div>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <span className="quiet">Best <b className="display num" style={{ fontSize: 30, color: 'var(--ink)' }}>{rushBest}</b></span>
+            <span className="key">Play</span>
+          </div>
+        </a>
       </div>
-      <section className="card">
-        <div className="card-head">
-          <h2>Mistake bank</h2>
-          <span className="muted">{drills.length} positions · {drills.filter(isMastered).length} mastered</span>
+
+      <section className="section">
+        <div className="section-head">
+          <h2 className="t-2">Your mistakes</h2>
+          <span className="faint t-small">{drills.length} saved, {mastered} mastered</span>
         </div>
-        {!drills.length && <p className="muted">Review a game and every mistake, miss and blunder you made lands here automatically.</p>}
-        <div className="bank">
-          {[...drills].sort((a, b) => a.due - b.due).slice(0, 40).map((d) => (
-            <a key={d.id} className="bank-item" href={`#/review/${encodeURIComponent(d.gameId)}`}>
-              <ClassIcon cls={d.cls} size={18} />
-              <span className="mono">{d.playedSan}</span>
-              <span className="muted">→ {d.bestSan}</span>
-              <span className="muted small">vs {d.opponent}</span>
-              <span className="spacer" />
-              <span className={`mono small ${d.due <= Date.now() ? 'due' : 'muted'}`}>{isMastered(d) ? '🧠 mastered' : dueLabel(d)}</span>
+        {!drills.length && <p className="quiet">Review a game and every mistake, miss and blunder you made lands here.</p>}
+        <div>
+          {sorted.slice(0, 50).map((d) => (
+            <a key={d.id} className="bank-row" href={`#/review/${encodeURIComponent(d.gameId)}`}>
+              <ClassIcon cls={d.cls} size={20} />
+              <b className="num">{d.playedSan}</b>
+              <span className="quiet">vs {d.opponent}, better was {d.bestSan}</span>
+              <span className={`t-small ${d.due <= now ? 'due' : 'faint'}`}>{isMastered(d) ? 'Mastered' : dueLabel(d)}</span>
             </a>
           ))}
         </div>
@@ -83,395 +87,274 @@ function TrainMenu() {
   );
 }
 
-function Runner({ mode, onRestart }: { mode: Mode; onRestart: () => void }) {
+const PHASE_TITLE: Record<string, string> = {
+  solve: 'Your move',
+  checking: 'Checking…',
+  wrong: 'Not this time',
+  explain: 'Here’s the idea',
+  replay: 'Walk through it',
+  confirm: 'Now you play it',
+  solved: 'Correct',
+};
+
+function Runner({ mode, onAgain }: { mode: TrainMode; onAgain: () => void }) {
   const st = useStore();
-  const [items, setItems] = useState<Item[] | null>(null);
-  const [idx, setIdx] = useState(0);
-  const [combo, setCombo] = useState(0);
-  const [results, setResults] = useState<boolean[]>([]);
-  const [xpEarned, setXpEarned] = useState(0);
-  const [ratingDelta, setRatingDelta] = useState(0);
-  const [lives, setLives] = useState(3);
-  const [timeLeft, setTimeLeft] = useState(180);
-  const [over, setOver] = useState(false);
-  const [leakLabel, setLeakLabel] = useState<string | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const comboRef = useRef<HTMLDivElement>(null);
-  const requeued = useRef(new Set<string>());
-
-  // Build the item list.
-  useEffect(() => {
-    (async () => {
-      const drills = await db.drills.toArray();
-      if (mode === 'session') {
-        const s = buildSession(drills, 10, recentSuccess());
-        const own: Item[] = s.map((d) => ({ kind: 'drill', drill: d }));
-        if (own.length >= 6) return setItems(own);
-        // Small bank: pad with puzzles aimed at your biggest leak (interleaved).
-        const [games, analyses] = await Promise.all([db.games.toArray(), db.analyses.toArray()]);
-        const leak = computeLeaks(games, analyses).filter((l) => l.motif !== 'opening' && l.motif !== 'endgame')[0];
-        const ps: Item[] = (await fetchMany(leak?.angle, 6 - own.length)).map((p) => ({ kind: 'puzzle', p, tag: leak?.label }));
-        const mixed: Item[] = [];
-        while (own.length || ps.length) {
-          if (own.length) mixed.push(own.shift()!);
-          if (ps.length) mixed.push(ps.shift()!);
-        }
-        return setItems(mixed);
-      }
-      if (mode === 'leak') {
-        const [games, analyses] = await Promise.all([db.games.toArray(), db.analyses.toArray()]);
-        const leak = computeLeaks(games, analyses).filter((l) => l.motif !== 'opening' && l.motif !== 'endgame')[0];
-        const angle = leak?.angle ?? 'advantage';
-        setLeakLabel(leak ? `${leak.emoji} ${leak.label}` : null);
-        const own = leak ? drills.filter((d) => d.motifs?.includes(leak.motif)).sort((a, b) => a.due - b.due).slice(0, 4) : [];
-        const ps = await fetchMany(angle, 6);
-        const mixed: Item[] = [];
-        const a: Item[] = ps.map((p) => ({ kind: 'puzzle', p, tag: leak?.label }));
-        const b: Item[] = own.map((d) => ({ kind: 'drill', drill: d }));
-        while (a.length || b.length) {
-          if (a.length) mixed.push(a.shift()!);
-          if (b.length) mixed.push(b.shift()!);
-        }
-        return setItems(mixed);
-      }
-      // rush: own drills shuffled, then a stream of puzzles
-      const own = [...drills].sort(() => Math.random() - 0.5).slice(0, 25);
-      const ps = await fetchMany(undefined, 4);
-      setItems([...own.map((d) => ({ kind: 'drill' as const, drill: d })), ...ps.map((p) => ({ kind: 'puzzle' as const, p }))]);
-    })();
-  }, [mode]);
-
-  // Rush timer
-  useEffect(() => {
-    if (mode !== 'rush' || !items || over) return;
-    const t = setInterval(() => setTimeLeft((x) => (x <= 1 ? (setOver(true), 0) : x - 1)), 1000);
-    return () => clearInterval(t);
-  }, [mode, items, over]);
-
-  // Rush: top up with puzzles when running low.
-  useEffect(() => {
-    if (mode === 'rush' && items && items.length - idx < 3 && !over) {
-      fetchMany(undefined, 3).then((ps) => setItems((x) => [...(x ?? []), ...ps.map((p) => ({ kind: 'puzzle' as const, p }))]));
-    }
-  }, [idx, mode, items?.length, over]);
-
-  useEffect(() => {
-    if (over) finish();
-  }, [over]);
-
-  const finish = () => {
-    const acc = results.length ? results.filter(Boolean).length / results.length : 0;
-    if (mode === 'rush') {
-      const score = results.filter(Boolean).length;
-      st.stat('rushBest', score, 'max');
-      st.progressQuest('rush', score, 'max');
-    }
-    if (results.length >= 5 && acc >= 0.85) st.progressQuest('perfect', 1);
-    if (results.length >= 5 && acc === 1) {
-      st.addXP(30);
-    }
-    sfx.levelUp();
-    confettiBurst(['#ffd34d', '#1fd1b9', '#5b8def', '#ff6bd6'], 1.5);
-  };
-
-  const onResult = async (ok: boolean, firstTry: boolean, ms: number, item: Item, at?: { x: number; y: number }) => {
-    pushRecent(ok);
-    setResults((r) => [...r, ok]);
-    await bumpActivity({ drills: 1, correct: ok ? 1 : 0 });
-    // training rating
-    const opp = item.kind === 'puzzle' ? item.p.rating : drillRating(item.drill, gamesBaseRating.current);
-    setRatingDelta((d) => d + st.rateTraining(opp, ok ? 1 : 0));
-
-    if (item.kind === 'drill') {
-      const next = schedule(item.drill, gradeFrom(ok, firstTry, ms));
-      await db.drills.put(next);
-      if (!ok && mode === 'session' && !requeued.current.has(item.drill.id)) {
-        // relearn: see it again at the end of this session
-        requeued.current.add(item.drill.id);
-        setItems((x) => [...(x ?? []), { kind: 'drill', drill: next }]);
-      }
-    }
-
-    if (ok) {
-      const c = combo + 1;
-      setCombo(c);
-      st.stat('drillsSolved', 1);
-      st.stat('bestCombo', c, 'max');
-      st.progressQuest('solve', 1);
-      st.progressQuest('combo', c, 'max');
-      if (item.kind === 'puzzle' && mode === 'leak') st.progressQuest('theme', 1);
-      const mult = 1 + 0.25 * Math.min(c - 1, 8);
-      const gain = Math.round((mode === 'rush' ? 6 : 10) * mult * (firstTry ? 1 : 0.5));
-      setXpEarned((x) => x + gain);
-      st.addXP(gain, at);
-      sfx.combo(c);
-      pop(comboRef.current, 1.4);
-      if (at) burst(at.x, at.y, '#7fc241', 14 + c * 2, 80 + c * 6);
-      if (c > 0 && c % 5 === 0) {
-        confettiBurst(['#ff6bd6', '#ffd34d', '#1fd1b9'], 1 + c / 10);
-        flash('#ffd34d');
-      }
-    } else {
-      setCombo(0);
-      st.stat('drillsFailed', 1);
-      if (mode === 'rush') {
-        setLives((l) => {
-          if (l <= 1) setOver(true);
-          return l - 1;
-        });
-      }
-    }
-  };
-
-  const gamesBaseRating = useRef(1200);
-  useEffect(() => {
-    db.games.orderBy('endTime').reverse().first().then((g) => g && (gamesBaseRating.current = selfOf(g).rating));
-  }, []);
-
-  if (!items) return <div className="page center"><span className="spinner big" /><p className="muted">Building your session…</p></div>;
-  if (!items.length) return <div className="page center"><h2>Nothing to train yet</h2><p className="muted">Review a game first — your mistakes become drills.</p><a className="btn primary" href="#/games">Go to games</a></div>;
-
-  const done = over || (mode !== 'rush' && idx >= items.length);
-  if (done) return <SessionEnd mode={mode} results={results} xp={xpEarned} rating={ratingDelta} onRestart={onRestart} />;
-  const item = items[idx];
-  const comboLevel = combo >= 10 ? 'inferno' : combo >= 5 ? 'fire' : combo >= 3 ? 'warm' : '';
-
-  return (
-    <div className={`trainer ${comboLevel}`}>
-      <div className="trainer-top">
-        <a href="#/train" className="btn ghost small">✕</a>
-        {mode === 'rush' ? (
-          <div className="rush-hud">
-            <span className="lives">{'❤️'.repeat(lives)}{'🖤'.repeat(Math.max(0, 3 - lives))}</span>
-            <span className={`mono timer ${timeLeft <= 20 ? 'low' : ''}`}>{Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}</span>
-            <span className="mono score">{results.filter(Boolean).length}</span>
-          </div>
-        ) : (
-          <div className="dots">
-            {items.map((_, i) => (
-              <span key={i} className={`pdot ${i < results.length ? (results[i] ? 'ok' : 'bad') : i === idx ? 'cur' : ''}`} />
-            ))}
-          </div>
-        )}
-        <div className={`combo ${comboLevel}`} ref={comboRef}>
-          <span className="combo-flame">{combo >= 3 ? '🔥' : '✦'}</span>
-          <span className="mono combo-n">{combo}×</span>
-          <span className="combo-label">combo</span>
-        </div>
-      </div>
-      {leakLabel && <div className="leak-banner">Targeting your leak: <b>{leakLabel}</b></div>}
-      <Solver key={idx + (item.kind === 'drill' ? item.drill.id : item.p.id)} item={item} onResult={(ok, ft, ms, at) => onResult(ok, ft, ms, item, at)} onNext={() => setIdx((i) => i + 1)} rush={mode === 'rush'} />
-    </div>
-  );
-}
-
-async function fetchMany(angle: string | undefined, n: number): Promise<LichessPuzzle[]> {
-  const out: LichessPuzzle[] = [];
-  const seen = new Set<string>();
-  for (let i = 0; i < n * 2 && out.length < n; i++) {
-    try {
-      const p = await fetchPuzzle(angle);
-      if (!seen.has(p.id)) {
-        seen.add(p.id);
-        out.push(p);
-      }
-    } catch {
-      break;
-    }
-  }
-  return out;
-}
-
-type SolveState = 'solving' | 'thinking' | 'wrong' | 'right' | 'failed';
-
-function Solver({ item, onResult, onNext, rush }: { item: Item; onResult: (ok: boolean, firstTry: boolean, ms: number, at?: { x: number; y: number }) => void; onNext: () => void; rush: boolean }) {
-  const startFen = item.kind === 'drill' ? item.drill.fen : item.p.fen;
-  const [fen, setFen] = useState(startFen);
-  const [last, setLast] = useState<[string, string] | undefined>(item.kind === 'puzzle' && item.p.lastMove ? [item.p.lastMove.slice(0, 2), item.p.lastMove.slice(2, 4)] : undefined);
-  const [state, setState] = useState<SolveState>('solving');
-  const [step, setStep] = useState(0); // index into puzzle solution
-  const [tries, setTries] = useState(0);
-  const [hint, setHint] = useState(0);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
-  const t0 = useRef(Date.now());
-  const boardRef = useRef<HTMLDivElement>(null);
-  const reported = useRef(false);
-  const ratingRef = useRef<HTMLSpanElement>(null);
-  const color = new Chess(startFen).turn();
-  const orientation = color === 'w' ? 'white' : 'black';
-  const best = item.kind === 'drill' ? item.drill.bestUci : item.p.solution[step];
+  const [xpEarned, setXp] = useState(0);
+  const [ratingDelta, setRatingDelta] = useState(0);
 
   const center = () => {
-    const r = boardRef.current?.getBoundingClientRect();
+    const r = stageRef.current?.getBoundingClientRect();
     return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : undefined;
   };
 
-  const report = (ok: boolean) => {
-    if (reported.current) return;
-    reported.current = true;
-    onResult(ok, tries === 0 && hint === 0, Date.now() - t0.current, center());
+  const onCorrect = (r: TrainResult) => {
+    const mult = 1 + 0.25 * Math.min(Math.max(r.combo - 1, 0), 8);
+    const gain = Math.round((mode === 'rush' ? 6 : 10) * mult * (r.cleanSolve ? 1 : 0.4));
+    // Variable reward lands on the behaviour we want: a fast, clean recall of a card you once forgot.
+    const crit = r.cleanSolve && r.ms < 8000 && r.item.kind === 'drill' && r.item.drill.lapses > 0;
+    setXp((x) => x + gain * (crit ? 2 : 1));
+    st.addXP(gain, center(), { crit });
+    st.stat('drillsSolved', 1);
+    st.stat('bestCombo', r.combo, 'max');
+    st.progressQuest('solve', 1);
+    st.progressQuest('combo', r.combo, 'max');
+    if (r.item.kind === 'puzzle' && mode === 'leak') st.progressQuest('theme', 1);
+    // Training rating only moves on puzzles with a real, externally calibrated rating.
+    if (r.item.kind === 'puzzle') setRatingDelta((d) => d + st.rateTraining(r.item.kind === 'puzzle' ? r.item.p.rating : 0, 1));
+    void bumpActivity({ drills: 1, correct: 1 });
+    if (r.cleanSolve) sfx.combo(r.combo);
+    else sfx.correct();
+    pop(comboRef.current, 1.3);
+    const c = center();
+    if (c) burst(c.x, c.y, '#5baa2e', 12 + r.combo * 2, 70 + r.combo * 5);
+    if (r.combo > 0 && r.combo % 5 === 0) confettiBurst(['#f2b705', '#ff6a1a', '#ffffff'], 1 + r.combo / 10);
   };
-
-  useEffect(() => {
-    if (state === 'right' && rush) {
-      const t = setTimeout(onNext, 650);
-      return () => clearTimeout(t);
-    }
-    if (state === 'failed' && rush) {
-      const t = setTimeout(onNext, 1600);
-      return () => clearTimeout(t);
-    }
-  }, [state]);
-
-  useEffect(() => {
-    if (state === 'right') countUp(ratingRef.current, useStore.getState().trainingRating, 0, 900, useStore.getState().trainingRating - 10);
-  }, [state]);
-
-  const onMove = async (from: string, to: string, promo?: string) => {
-    const uci = from + to + (promo ?? '');
-    if (item.kind === 'drill') {
-      setState('thinking');
-      const r = await verifyMove(fen, uci, item.drill.bestUci, item.drill.winBefore, 3);
-      if (r.ok) {
-        setFen(r.fenAfter);
-        setLast([from, to]);
-        setState('right');
-        setMsg(r.exact ? `${r.san}! Exactly right.` : `${r.san} works too — great find.`);
-        sfx.correct();
-        report(true);
-      } else wrong(`${r.san} loses ${r.loss.toFixed(0)}% winning chances.`);
-      return;
-    }
-    // Lichess puzzle: follow the solution line; any checkmate also counts.
-    const c = new Chess(fen);
-    const m = c.move({ from, to, promotion: promo ?? 'q' });
-    const expected = item.p.solution[step];
-    if (m.from + m.to === expected.slice(0, 4) || c.isCheckmate()) {
-      sfx.move();
-      const nextStep = step + 1;
-      if (nextStep >= item.p.solution.length || c.isCheckmate()) {
-        setFen(c.fen());
-        setLast([from, to]);
-        setState('right');
-        setMsg('Puzzle solved!');
-        sfx.correct();
-        report(true);
-        return;
-      }
-      // play the opponent's reply
-      const reply = item.p.solution[nextStep];
-      setFen(c.fen());
-      setLast([from, to]);
-      setTimeout(() => {
-        const c2 = new Chess(c.fen());
-        const rm = c2.move({ from: reply.slice(0, 2), to: reply.slice(2, 4), promotion: reply[4] });
-        rm.captured ? sfx.capture() : sfx.move();
-        setFen(c2.fen());
-        setLast([rm.from, rm.to]);
-        setStep(nextStep + 1);
-      }, 380);
-    } else wrong(`${m.san} isn't the move.`);
-  };
-
-  const wrong = (text: string) => {
+  const onWrong = (r: TrainResult) => {
+    st.stat('drillsFailed', 1);
+    if (r.item.kind === 'puzzle') setRatingDelta((d) => d + st.rateTraining(r.item.kind === 'puzzle' ? r.item.p.rating : 0, 0));
+    void bumpActivity({ drills: 1 });
     sfx.wrong();
-    shake(boardRef.current, 14);
-    flash('#f2382f');
-    setNonce((n) => n + 1);
-    setTries((t) => t + 1);
-    setMsg(text);
-    if (rush || tries >= 1 || item.kind === 'puzzle') {
-      setState('failed');
-      report(false);
-    } else setState('wrong');
+    shake(stageRef.current, 10);
+    flash('#d7263d');
+  };
+  const onFinish = (s: TrainSummary) => {
+    if (mode === 'rush') {
+      st.stat('rushBest', s.correct, 'max');
+      st.progressQuest('rush', s.correct, 'max');
+    }
+    if (s.total >= 5 && s.accuracy >= 0.85) st.progressQuest('perfect', 1);
+    if (s.total >= 5 && s.failed === 0) st.addXP(30);
+    sfx.levelUp();
+    confettiBurst(['#f2b705', '#12b8a6', '#4c7ef3'], 1.2);
   };
 
-  const arrows: Arrow[] = [];
-  if (state === 'failed' || (state === 'right' && item.kind === 'drill')) arrows.push({ from: best.slice(0, 2), to: best.slice(2, 4), brush: 'best' });
-  else if (hint >= 2) arrows.push({ from: best.slice(0, 2), to: best.slice(0, 2), brush: 'hint' });
+  const t = useTrainSession(mode, { onCorrect, onWrong, onFinish });
+  const { phase, item, board, actions } = t;
 
-  const motif = item.kind === 'drill' ? item.drill.motifs?.[0] : undefined;
+  useEffect(() => {
+    if (phase === 'solved') sfx.correct();
+  }, [phase, t.index]);
+
+  if (phase === 'loading') return <div className="page"><span className="spin lg" /> <span className="quiet">Building your session…</span></div>;
+  if (phase === 'complete') return <SessionEnd summary={t.summary} mode={mode} xp={xpEarned} rating={ratingDelta} onAgain={onAgain} />;
+  if (!item) {
+    return (
+      <div className="page narrow">
+        <h1 className="display t-1">Nothing to train yet</h1>
+        <p className="quiet" style={{ margin: '10px 0 20px' }}>Review a game first. Every mistake you made becomes a position here.</p>
+        <a className="key ink" href="#/games">Go to your games</a>
+      </div>
+    );
+  }
+
+  const heat = t.combo >= 8 ? 'blazing' : t.combo >= 3 ? 'hot' : '';
+  const turn = board.orientation === 'white' ? 'White' : 'Black';
+  const solvedIdx = new Map(t.results.map((r) => [r.index, r.correct]));
 
   return (
-    <div className="solver">
-      <div className="solver-board" ref={boardRef}>
-        <Board fen={fen} orientation={orientation} lastMove={last} arrows={arrows} movable={state === 'solving' || state === 'wrong'} onMove={onMove} nonce={nonce} />
+    <div className="page">
+      <div className="trainer-head">
+        <a className="key flat sm" href="#/train">Quit</a>
+        {mode === 'rush' ? (
+          <div className="row grow" style={{ gap: 18 }}>
+            <span className="lives" aria-label={`${t.lives} lives`}>{[0, 1, 2].map((i) => <i key={i} className={i < t.lives ? '' : 'gone'} />)}</span>
+            <span className="display num" style={{ fontSize: 32, color: t.timeLeft <= 20 ? 'var(--c-blunder)' : undefined }}>
+              {Math.floor(t.timeLeft / 60)}:{String(t.timeLeft % 60).padStart(2, '0')}
+            </span>
+            <span className="grow" />
+            <span className="quiet">Score <b className="display num" style={{ fontSize: 32, color: 'var(--ink)' }}>{t.summary.correct}</b></span>
+          </div>
+        ) : (
+          <div className="progress-ticks">
+            {t.items.map((_, i) => (
+              <i key={i} className={solvedIdx.has(i) ? (solvedIdx.get(i) ? 'ok' : 'bad') : i === t.index ? 'cur' : ''} />
+            ))}
+          </div>
+        )}
+        <div ref={comboRef} className={`combo ${heat}`} aria-label={`Combo ${t.combo}`}>
+          <span className="display num" style={{ fontVariationSettings: `'wdth' ${Math.min(125, 68 + t.combo * 7)}` }}>{t.combo}</span>
+          <span className="t-small" style={{ fontWeight: 650 }}>in a row</span>
+        </div>
       </div>
-      <div className="solver-side">
-        <AnimatePresence mode="wait">
-          <motion.div key={state} className={`card solver-card ${state}`} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-            {item.kind === 'drill' ? (
-              <>
-                <div className="solver-src">
-                  <ClassIcon cls={item.drill.cls} size={22} />
-                  <span>From your game vs <b>{item.drill.opponent}</b></span>
-                </div>
-                <h2>{color === 'w' ? 'White' : 'Black'} to move</h2>
-                <p className="muted">
-                  You played <b className="bad">{item.drill.playedSan}</b> here — a {CLASS_LABEL[item.drill.cls].toLowerCase()}. {item.drill.cls === 'miss' ? 'Find the winning move.' : 'Find the best move.'}
-                </p>
-              </>
-            ) : (
-              <>
-                <div className="solver-src">🧩 <span>Lichess puzzle · <span className="mono">{item.p.rating}</span>{item.tag ? ` · ${item.tag}` : ''}</span></div>
-                <h2>{color === 'w' ? 'White' : 'Black'} to move</h2>
-                <p className="muted">Find the best continuation{item.p.solution.length > 2 ? ` (${Math.ceil(item.p.solution.length / 2)} moves)` : ''}.</p>
-              </>
-            )}
-            {state === 'thinking' && <p className="muted"><span className="spinner" /> Checking…</p>}
-            {msg && <p className={state === 'right' ? 'good big-msg' : 'bad'}>{msg}</p>}
-            {state === 'right' && (
-              <div className="rating-tick">⚡ <span className="mono" ref={ratingRef}>{useStore.getState().trainingRating}</span> training rating</div>
-            )}
-            {state === 'failed' && <p className="small">Answer: <b>{item.kind === 'drill' ? item.drill.bestSan : uciSan(fen, best)}</b></p>}
-            {hint >= 1 && motif && state !== 'right' && state !== 'failed' && <p className="hint small">💡 {MOTIF_INFO[motif].tip}</p>}
-            <div className="row gap">
-              {(state === 'solving' || state === 'wrong') && !rush && (
-                <button className="btn ghost" onClick={() => setHint((h) => Math.min(2, h + 1))}>💡 Hint {hint ? `(${hint}/2)` : ''}</button>
-              )}
-              {(state === 'right' || state === 'failed') && !rush && <button className="btn primary big" autoFocus onClick={onNext}>Next →</button>}
+
+      <div className="solve">
+        <div className={`stage ${heat}`} ref={stageRef}>
+          <Board
+            fen={board.fen}
+            orientation={board.orientation}
+            lastMove={board.lastMove}
+            arrows={board.arrows}
+            highlight={board.highlights}
+            movable={board.movable}
+            onMove={(f, to, p) => void (phase === 'confirm' ? actions.confirmMove(f, to, p) : actions.submitMove(f, to, p))}
+          />
+          {phase === 'replay' && (
+            <div className="transport on-stage" style={{ marginTop: 14 }}>
+              <button className="key sq" onClick={() => actions.replayTo(0)} aria-label="Start of line">⏮</button>
+              <button className="key sq" onClick={() => actions.replayStep(-1)} aria-label="Back">◀</button>
+              <button className="key sq go" onClick={() => actions.replayStep(1)} aria-label="Forward">▶</button>
+              <span style={{ opacity: 0.7 }} className="num">Move {t.replay.step} of {t.replay.total}</span>
             </div>
-          </motion.div>
-        </AnimatePresence>
+          )}
+        </div>
+
+        <aside className="stack" style={{ gap: 14 }}>
+          <div className="panel panel-pad stack" style={{ gap: 6 }}>
+            {item.kind === 'drill' ? (
+              <span className="row t-small quiet" style={{ gap: 6 }}>
+                <ClassIcon cls={item.drill.cls} size={18} /> From your game vs {item.drill.opponent}
+              </span>
+            ) : (
+              <span className="t-small quiet">Lichess puzzle, rated <b className="num">{item.p.rating}</b>{item.tag ? `, for ${item.tag.toLowerCase()}` : ''}</span>
+            )}
+            <h2 className="display" style={{ fontSize: 40 }}>{PHASE_TITLE[phase] ?? ''}</h2>
+            <p className="quiet">
+              {turn} to move.{' '}
+              {item.kind === 'drill' && phase === 'solve' && (
+                <>You played <b style={{ color: 'var(--c-blunder)' }}>{item.drill.playedSan}</b> here, a {CLASS_LABEL[item.drill.cls].toLowerCase()}. Find the better move.</>
+              )}
+              {item.kind === 'puzzle' && phase === 'solve' && 'Find the strongest continuation.'}
+            </p>
+          </div>
+
+          <div className="panel coach stack" style={{ gap: 12 }}>
+            {(phase === 'solve' || phase === 'checking') && (
+              <>
+                {t.hint ? (
+                  <div className="stack" style={{ gap: 4 }}>
+                    <span className="faint t-small">Hint {t.hint.level} of 3</span>
+                    <p className="coach-text">{t.hint.text}</p>
+                  </div>
+                ) : (
+                  <p className="quiet">Hints get more specific each time, but cost part of the XP.</p>
+                )}
+                {mode !== 'rush' && (
+                  <div className="row">
+                    <button className="key" onClick={actions.nextHint} disabled={t.hintsUsed >= 3 || phase === 'checking'}>
+                      {t.hintsUsed === 0 ? 'Give me a hint' : t.hintsUsed < 3 ? 'More specific' : 'No more hints'}
+                    </button>
+                    <button className="key flat" onClick={actions.giveUp} disabled={phase === 'checking'}>Show me</button>
+                  </div>
+                )}
+              </>
+            )}
+            {phase === 'wrong' && (
+              <>
+                <p className="coach-text">The green arrow shows the move. Let’s see why it works before moving on.</p>
+                <button className="key ink" onClick={actions.explain} autoFocus>Explain it</button>
+              </>
+            )}
+            {phase === 'explain' && t.explanation && (
+              <>
+                <p className="coach-text"><b>{t.explanation.headline}</b></p>
+                <p>{t.explanation.detail}</p>
+                {t.plan?.idea && <p className="quiet">{t.plan.idea}</p>}
+                <button className="key ink" onClick={actions.startReplay} autoFocus>Step through the line</button>
+              </>
+            )}
+            {phase === 'replay' && t.plan && (
+              <>
+                <div className="line-chips">
+                  {t.plan.lineExplained.map((x, i) => (
+                    <button key={i} className={`line-chip ${t.replay.step === i + 1 ? 'now' : ''}`} onClick={() => actions.replayTo(i + 1)}>{x.san}</button>
+                  ))}
+                </div>
+                {(() => { const n = (t.plan.lineExplained[t.replay.step - 1] as { note?: string } | undefined)?.note; return n ? <p className="coach-text">{n}</p> : null; })()}
+                <button className="key ink" onClick={actions.startConfirm} disabled={t.replay.step < t.replay.total}>
+                  {t.replay.step < t.replay.total ? 'Play the line to the end first' : 'Now let me play it'}
+                </button>
+              </>
+            )}
+            {phase === 'confirm' && (
+              <>
+                <p className="coach-text">Play the line yourself from the start. Doing it once is what makes it stick.</p>
+                {t.error && <p style={{ color: 'var(--c-blunder)', fontWeight: 600 }}>{t.error}</p>}
+              </>
+            )}
+            {phase === 'solved' && (
+              <>
+                {item.kind === 'drill' && t.explanation && <p className="coach-text">{t.explanation.headline}</p>}
+                <button className="key go big" onClick={actions.next} autoFocus>{t.index + 1 < t.items.length || mode === 'rush' ? 'Next position' : 'Finish'}</button>
+              </>
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   );
 }
 
-function uciSan(fen: string, uci: string) {
-  try {
-    return new Chess(fen).move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }).san;
-  } catch {
-    return uci;
-  }
-}
-
-function SessionEnd({ mode, results, xp, rating, onRestart }: { mode: Mode; results: boolean[]; xp: number; rating: number; onRestart: () => void }) {
-  const ok = results.filter(Boolean).length;
-  const acc = results.length ? Math.round((ok / results.length) * 100) : 0;
+function SessionEnd({ summary, mode, xp, rating, onAgain }: { summary: TrainSummary; mode: TrainMode; xp: number; rating: number; onAgain: () => void }) {
   const a = useRef<HTMLSpanElement>(null);
   const b = useRef<HTMLSpanElement>(null);
+  const acc = Math.round(summary.accuracy * 100);
+  const drills = useLiveQuery(() => db.drills.toArray(), []);
+  const forecast = drills ? dueForecast(drills, Date.now()) : null;
   useEffect(() => {
-    countUp(a.current, mode === 'rush' ? ok : acc, 0, 1400);
-    countUp(b.current, xp, 0, 1600);
+    countUp(a.current, mode === 'rush' ? summary.correct : acc, 0, 1200);
+    countUp(b.current, xp, 0, 1400);
   }, []);
-  const line = acc === 100 ? 'Flawless. Your brain is rewiring.' : acc >= 85 ? 'Right in the learning sweet spot.' : acc >= 60 ? 'Good reps — the misses come back soon so they stick.' : 'Tough set. These will return until they click.';
+  const line =
+    mode === 'rush'
+      ? `Best streak in this run: ${summary.bestCombo}.`
+      : acc === 100
+        ? 'Every position, first time.'
+        : acc >= 80
+          ? 'Right where learning happens fastest: hard enough to stretch you.'
+          : 'The ones you missed come back sooner, so they stick.';
   return (
-    <div className="page center session-end">
-      <motion.div className="card end-card" initial={{ scale: 0.7, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 200, damping: 15 }}>
-        <div className="big-emoji">{acc === 100 ? '🏆' : acc >= 85 ? '🔥' : '💪'}</div>
-        <h1 className="h1">{mode === 'rush' ? 'Rush over!' : 'Session complete'}</h1>
-        <p className="muted">{line}</p>
-        <div className="stat-row">
-          <div className="stat"><span className="stat-num mono" ref={a}>0</span><span className="muted">{mode === 'rush' ? 'score' : '% accuracy'}</span></div>
-          <div className="stat"><span className="stat-num mono" style={{ color: '#ffd34d' }} ref={b}>0</span><span className="muted">XP earned</span></div>
-          <div className="stat"><span className={`stat-num mono ${rating >= 0 ? 'up' : 'down'}`}>{rating >= 0 ? '+' : ''}{rating}</span><span className="muted">training rating</span></div>
+    <div className="page narrow">
+      <h1 className="display t-hero">{mode === 'rush' ? 'Time' : 'Session done'}</h1>
+      <p className="quiet t-3" style={{ fontWeight: 450, margin: '8px 0 28px' }}>{line}</p>
+      <div className="panel versus" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+        <div>
+          <div className="display acc num" style={{ fontSize: 64 }}><span ref={a}>0</span>{mode === 'rush' ? '' : '%'}</div>
+          <p className="quiet">{mode === 'rush' ? 'solved' : 'accuracy'}</p>
         </div>
-        <div className="row gap center">
-          <button className="btn primary big" onClick={onRestart}>Again ↻</button>
-          <a className="btn big" href="#/">Home</a>
+        <div style={{ borderLeft: '1px solid var(--rule)' }}>
+          <div className="display acc num" style={{ fontSize: 64, color: 'var(--gold-ink)' }}>+<span ref={b}>0</span></div>
+          <p className="quiet">XP</p>
         </div>
-      </motion.div>
+        <div style={{ borderLeft: '1px solid var(--rule)' }}>
+          <div className="display acc num" style={{ fontSize: 64, color: rating >= 0 ? 'var(--c-best)' : 'var(--c-blunder)' }}>{rating >= 0 ? '+' : ''}{rating}</div>
+          <p className="quiet">training rating</p>
+        </div>
+      </div>
+      {forecast && mode !== 'rush' && (
+        <p className="t-3" style={{ marginTop: 22, fontWeight: 500 }}>
+          {forecast.dueNow > 0
+            ? `${forecast.dueNow} more ${forecast.dueNow === 1 ? 'is' : 'are'} ready now.`
+            : forecast.dueTomorrow > 0
+              ? `${forecast.dueTomorrow} come back tomorrow. See you then.`
+              : 'Nothing else is due. Play a game and Hindsight will find your next lessons.'}
+        </p>
+      )}
+      <div className="row" style={{ marginTop: 24 }}>
+        <button className="key ink big" onClick={onAgain}>{forecast && forecast.dueNow > 0 ? 'One more round' : 'Go again'}</button>
+        <a className="key big" href="#/">Back to today</a>
+      </div>
     </div>
   );
 }

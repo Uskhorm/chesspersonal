@@ -20,8 +20,8 @@ export async function verifyMove(fen: string, uci: string, bestUci: string, winB
   const c = new Chess(fen);
   const mover = c.turn() as Color;
   const m = c.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] ?? 'q' });
-  const played = m.from + m.to;
-  const exact = played === bestUci.slice(0, 4);
+  const played = m.from + m.to + (m.promotion ?? '');
+  const exact = played === bestUci;
   if (exact || c.isCheckmate()) return { ok: true, exact, loss: 0, san: m.san, fenAfter: c.fen(), mate: c.isCheckmate() };
   const e = await engine.analyse(c.fen(), 13, 1, undefined, true);
   const win = scoreToWin(e.lines[0]?.score ?? { cp: 0 }, mover);

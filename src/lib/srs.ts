@@ -1,16 +1,39 @@
 import type { AnalysedMove, Drill, StoredGame } from './types';
 import { opponentOf } from './chesscom';
+import { FSRS, createEmptyCard, Rating, type Card } from 'ts-fsrs';
 
 /**
- * Spaced repetition for your own mistakes (SM-2 family, the algorithm behind Anki).
+ * FSRS-6 using the synchronous compatibility API shipped with ts-fsrs v6.
  * Spacing + retrieval practice are the two most robust findings in learning science:
  * reviewing a position right before you'd forget it makes it stick.
  */
 export type Grade = 'again' | 'hard' | 'good' | 'easy';
 
 const DAY = 86_400_000;
+const scheduler = new FSRS({ request_retention: 0.85, enable_fuzz: false });
+export type SerializedCard = Omit<Card, 'due' | 'last_review'> & { due: number; last_review?: number };
+export type FsrsDrill = Drill & { fsrs?: SerializedCard; introducedAt?: number; updatedAt?: number; move?: AnalysedMove };
 
-export function newDrill(game: StoredGame, m: AnalysedMove): Drill {
+function serialize(card: Card): SerializedCard {
+  return { ...card, due: card.due.getTime(), last_review: card.last_review?.getTime() };
+}
+
+function cardOf(d: Drill, now: number): Card {
+  const c = (d as FsrsDrill).fsrs;
+  return c ? { ...c, due: new Date(c.due), last_review: c.last_review === undefined ? undefined : new Date(c.last_review) }
+    : createEmptyCard(new Date(now));
+}
+
+/** New/legacy cards have no measured recall probability yet. */
+export function retrievability(d: Drill, now = Date.now()): number {
+  return scheduler.retrievability(cardOf(d, now), new Date(now));
+}
+
+export function isNewCard(d: Drill): boolean {
+  return !(d as FsrsDrill).fsrs?.reps;
+}
+
+export function newDrill(game: StoredGame, m: AnalysedMove): FsrsDrill {
   return {
     id: `${game.id}:${m.ply}`,
     gameId: game.id,
@@ -32,38 +55,33 @@ export function newDrill(game: StoredGame, m: AnalysedMove): Drill {
     solved: 0,
     createdAt: Date.now(),
     opponent: opponentOf(game).username,
+    fsrs: serialize(createEmptyCard(new Date())),
+    move: m,
   };
 }
 
-/** Grade from performance: wrong → again; solved slowly/2nd try → hard; fast (<8s) → easy. */
-export function gradeFrom(correct: boolean, firstTry: boolean, ms: number): Grade {
-  if (!correct) return 'again';
-  if (!firstTry) return 'hard';
+/** Assistance limits recall evidence; rush records only success or failure. */
+export function gradeFrom(correct: boolean, firstTry: boolean, ms: number, opts?: { hintsUsed?: number; mode?: 'session' | 'leak' | 'rush' | 'learn' }): Grade {
+  if (opts?.mode === 'rush') return correct && (opts.hintsUsed ?? 0) < 2 ? 'good' : 'again';
+  if (!correct || (opts?.hintsUsed ?? 0) >= 2) return 'again';
+  if (!firstTry || opts?.hintsUsed === 1) return 'hard';
   return ms < 8000 ? 'easy' : 'good';
 }
 
-export function schedule(d: Drill, g: Grade): Drill {
-  const n = { ...d, attempts: d.attempts + 1, lastSeen: Date.now() };
-  if (g === 'again') {
-    n.lapses++;
-    n.reps = 0;
-    n.ease = Math.max(1.3, n.ease - 0.2);
-    n.interval = 0;
-    n.due = Date.now() + 10 * 60_000; // relearn within the same session / day
-    return n;
-  }
-  n.solved++;
-  n.reps++;
-  const q = g === 'hard' ? 3 : g === 'good' ? 4 : 5;
-  n.ease = Math.max(1.3, n.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
-  if (n.reps === 1) n.interval = g === 'easy' ? 3 : 1;
-  else if (n.reps === 2) n.interval = g === 'easy' ? 8 : 4;
-  else n.interval = Math.round(n.interval * n.ease * (g === 'hard' ? 0.8 : g === 'easy' ? 1.3 : 1));
-  n.due = Date.now() + n.interval * DAY;
-  return n;
+export function schedule(d: Drill, g: Grade): FsrsDrill {
+  const now = Date.now();
+  const rating = { again: Rating.Again, hard: Rating.Hard, good: Rating.Good, easy: Rating.Easy } as const;
+  const card = scheduler.next(cardOf(d, now), new Date(now), rating[g]).card;
+  return {
+    ...d, fsrs: serialize(card), updatedAt: now,
+    introducedAt: (d as FsrsDrill).introducedAt ?? now,
+    attempts: d.attempts + 1, solved: d.solved + (g === 'again' ? 0 : 1),
+    lastSeen: now, reps: card.reps, lapses: card.lapses,
+    interval: (card.due.getTime() - now) / DAY, due: card.due.getTime(),
+  };
 }
 
-export const isMastered = (d: Drill) => d.interval >= 21;
+export const isMastered = (d: Drill) => ((d as FsrsDrill).fsrs?.stability ?? 0) >= 21;
 
 export function dueLabel(d: Drill): string {
   const diff = d.due - Date.now();

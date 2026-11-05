@@ -1,39 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { AnimatePresence, motion } from 'motion/react';
 import { Chess } from 'chess.js';
 import { db } from '../lib/db';
 import { enqueueAnalysis, markReviewed, useQueue } from '../lib/sync';
 import type { AnalysedMove, Classification, GameAnalysis, StoredGame } from '../lib/types';
 import { Board, type Arrow } from '../components/Board';
 import { EvalBar } from '../components/EvalBar';
-import { EvalGraph } from '../components/EvalGraph';
+import { Timeline } from '../components/Timeline';
 import { MoveList } from '../components/MoveList';
+import { Verdict } from '../components/Verdict';
 import { ClassIcon, CLASS_LABEL } from '../components/ClassIcon';
-import { CLASS_COLOR, celebrateClass, confettiBurst, countUp, shake } from '../lib/fx';
+import { celebrateClass, countUp, shake } from '../lib/fx';
 import { sfx } from '../lib/sound';
 import { formatScore } from '../lib/winpct';
-import { opponentOf, selfOf } from '../lib/chesscom';
-import { useStore } from '../lib/store';
-import { verifyMove } from '../lib/verify';
 import { MOTIF_INFO } from '../lib/classify';
+import { LearnMode } from './LearnMode';
+import { Coach } from '../components/Coach';
 
 const START = new Chess().fen();
 const BAD = new Set<Classification>(['inaccuracy', 'mistake', 'miss', 'blunder']);
-const KEY = new Set<Classification>(['mistake', 'miss', 'blunder']);
-const TIPS = [
-  'Every mistake you make becomes a flashcard you will see again right before you would forget it.',
-  'Before each move: Checks, Captures, Threats — for both sides.',
-  'Retrieval beats re-reading: trying to find the move yourself makes it stick 2× better.',
-  'Brilliant = a sound sacrifice that is also the best move.',
-  'A "Miss" means your opponent gifted you something and you didn\'t take it.',
-  'Losses teach the most. Review them first.',
-];
+export const KEY = new Set<Classification>(['mistake', 'miss', 'blunder']);
 
 export function Review({ id, learn }: { id: string; learn: boolean }) {
   const game = useLiveQuery(() => db.games.get(id), [id]);
   const [analysis, setAnalysis] = useState<GameAnalysis | null>(null);
-  const [stage, setStage] = useState<'summary' | 'review'>(learn ? 'review' : 'summary');
+  const [stage, setStage] = useState<'summary' | 'browse'>('summary');
   const q = useQueue();
 
   useEffect(() => {
@@ -48,35 +39,32 @@ export function Review({ id, learn }: { id: string; learn: boolean }) {
     };
   }, [id]);
 
-  if (!game) return <div className="page center"><span className="spinner big" /></div>;
-  if (!analysis) {
-    const pct = q.current === id && q.total ? Math.round((q.done / q.total) * 100) : 0;
-    return <Analysing pct={pct} queued={q.current !== id} />;
-  }
-  if (stage === 'summary') return <Summary a={analysis} gameId={id} onStart={(l) => (l ? (location.hash = `#/review/${encodeURIComponent(id)}/learn`) : setStage('review'))} />;
-  return <Stepper a={analysis} game={game} gameId={id} learn={learn} />;
+  if (!game) return <div className="page"><span className="spin lg" /></div>;
+  if (!analysis) return <Analysing game={game} pct={q.current === id && q.total ? Math.round((q.done / q.total) * 100) : 0} queued={q.current !== id} />;
+  if (learn) return <LearnMode a={analysis} game={game} />;
+  if (stage === 'summary') return <Summary a={analysis} game={game} onBrowse={() => setStage('browse')} />;
+  return <Browse a={analysis} game={game} />;
 }
 
-function Analysing({ pct, queued }: { pct: number; queued: boolean }) {
-  const [tip, setTip] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setTip((x) => (x + 1) % TIPS.length), 3500);
-    return () => clearInterval(t);
-  }, []);
+function Analysing({ game, pct, queued }: { game: StoredGame; pct: number; queued: boolean }) {
+  const opp = game.userColor === 'w' ? game.black : game.white;
   return (
-    <div className="page center analysing">
-      <div className="analysing-orb">
-        <motion.div className="orb-ring" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2.4, ease: 'linear' }} />
-        <span className="mono orb-pct">{pct}%</span>
-      </div>
-      <h2>{queued ? 'Queued for review…' : 'Stockfish 19 is reviewing your game'}</h2>
-      <AnimatePresence mode="wait">
-        <motion.p key={tip} className="muted tip" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-          💡 {TIPS[tip]}
-        </motion.p>
-      </AnimatePresence>
-      <div className="bar thick" style={{ width: 320 }}>
-        <motion.div className="bar-fill" animate={{ width: `${pct}%` }} />
+    <div className="page narrow">
+      <div className="stage" style={{ padding: 28 }}>
+        <p style={{ opacity: 0.7 }}>{queued ? 'Waiting for the engine' : 'Stockfish is reviewing every move'}</p>
+        <h1 className="display t-1" style={{ margin: '6px 0 18px' }}>
+          You vs {opp.username}
+        </h1>
+        <div className="row" style={{ alignItems: 'baseline' }}>
+          <span className="display num" style={{ fontSize: 96 }}>{pct}</span>
+          <span style={{ fontSize: 28, opacity: 0.6 }}>%</span>
+        </div>
+        <div className="meter" style={{ background: '#ffffff1a', marginTop: 12 }}>
+          <i style={{ width: `${pct}%`, background: 'var(--c-brilliant)' }} />
+        </div>
+        <p style={{ opacity: 0.7, marginTop: 16 }} className="t-small">
+          This runs on your device. You can leave this page; the review keeps going and you'll get a notification when it's ready.
+        </p>
       </div>
     </div>
   );
@@ -84,125 +72,139 @@ function Analysing({ pct, queued }: { pct: number; queued: boolean }) {
 
 const ORDER: Classification[] = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'miss', 'blunder'];
 
-function Summary({ a, gameId, onStart }: { a: GameAnalysis; gameId: string; onStart: (learn: boolean) => void }) {
-  const game = useLiveQuery(() => db.games.get(gameId), [gameId]);
+function Summary({ a, game, onBrowse }: { a: GameAnalysis; game: StoredGame; onBrowse: () => void }) {
   const wAcc = useRef<HTMLSpanElement>(null);
   const bAcc = useRef<HTMLSpanElement>(null);
-  const wElo = useRef<HTMLSpanElement>(null);
-  const bElo = useRef<HTMLSpanElement>(null);
+  const mine = game.userColor === 'w' ? a.white : a.black;
   useEffect(() => {
-    countUp(wAcc.current, a.white.accuracy, 1, 1600);
-    countUp(bAcc.current, a.black.accuracy, 1, 1600);
-    countUp(wElo.current, a.white.estRating, 0, 1800);
-    countUp(bElo.current, a.black.estRating, 0, 1800);
-    const mine = game ? (game.userColor === 'w' ? a.white : a.black) : null;
-    if (mine?.counts.brilliant) setTimeout(() => (sfx.brilliant(), confettiBurst([CLASS_COLOR.brilliant, '#fff'], 1.2)), 900);
-  }, [a, game?.userColor]);
-  if (!game) return null;
-  const keyMoments = a.moves.filter((m) => m.color === game.userColor && KEY.has(m.cls)).length;
-  const W = game.white;
-  const B = game.black;
+    countUp(wAcc.current, a.white.accuracy, 1, 1400);
+    countUp(bAcc.current, a.black.accuracy, 1, 1400);
+    if (mine.counts.brilliant) setTimeout(() => (sfx.brilliant(), celebrateClass('brilliant')), 700);
+  }, [a]);
+  const moments = a.moves.filter((m) => m.color === game.userColor && KEY.has(m.cls));
+  const sides = [
+    { key: 'w', p: game.white, s: a.white, ref: wAcc },
+    { key: 'b', p: game.black, s: a.black, ref: bAcc },
+  ] as const;
+  const result = game.userResult === 'win' ? 'You won' : game.userResult === 'loss' ? 'You lost' : 'Draw';
+
   return (
-    <div className="page summary">
-      <div className="summary-card card">
-        <div className="eyebrow">GAME REVIEW</div>
-        <h1 className="h1">{a.opening ?? 'Game'} </h1>
-        <div className="sum-players">
-          {[
-            { p: W, acc: wAcc, elo: wElo, me: game.userColor === 'w', side: 'white' },
-            { p: B, acc: bAcc, elo: bElo, me: game.userColor === 'b', side: 'black' },
-          ].map((x) => (
-            <div key={x.side} className={`sum-player ${x.me ? 'me' : ''}`}>
-              <div className="sum-name">
-                <span className={`dot ${x.side}`} /> {x.p.username} <span className="muted mono">({x.p.rating})</span>
+    <div className="page">
+      <header style={{ marginBottom: 24 }}>
+        <p className="quiet">
+          {result}, {game.timeClass}. {a.opening ?? 'Unnamed opening'}
+        </p>
+        <h1 className="display t-hero" style={{ marginTop: 6 }}>
+          {moments.length === 0 ? 'Clean game' : `${moments.length} moment${moments.length > 1 ? 's' : ''} to learn from`}
+        </h1>
+      </header>
+      <div className="summary-grid">
+        <div className="stack" style={{ gap: 18 }}>
+          <div className="panel versus">
+            {sides.map((x) => (
+              <div key={x.key} className={game.userColor === x.key ? 'me' : ''}>
+                <div className="row" style={{ gap: 8, fontWeight: 650 }}>
+                  <span className={`piece-dot ${x.key}`} style={{ borderColor: '#0002' }} /> {x.p.username}
+                  <span className="faint num" style={{ fontWeight: 500 }}>{x.p.rating}</span>
+                </div>
+                <div className="display acc num"><span ref={x.ref}>0</span></div>
+                <p className="quiet t-small">accuracy, played like about <b className="num">{x.s.estRating}</b></p>
+                <div className="row t-small" style={{ marginTop: 12, gap: 14 }}>
+                  {(['opening', 'middlegame', 'endgame'] as const).map((ph) => (
+                    <span key={ph} className="faint" style={{ textTransform: 'capitalize' }}>
+                      {ph} <b className="num" style={{ color: 'var(--ink)' }}>{x.s.phases[ph] ?? '–'}</b>
+                    </span>
+                  ))}
+                </div>
               </div>
-              <div className="sum-acc mono"><span ref={x.acc}>0</span></div>
-              <div className="muted small">accuracy</div>
-              <div className="sum-elo mono">≈ <span ref={x.elo}>0</span></div>
-              <div className="muted small">est. game rating</div>
+            ))}
+          </div>
+          <div className="row">
+            {moments.length > 0 && (
+              <a className="key ink big" href={`#/review/${encodeURIComponent(game.id)}/learn`}>
+                Learn from {moments.length === 1 ? 'it' : `all ${moments.length}`}
+              </a>
+            )}
+            <button className={`key big ${moments.length ? '' : 'ink'}`} onClick={onBrowse}>Step through the game</button>
+            <a className="key flat" href={game.url} target="_blank" rel="noreferrer">Open on chess.com</a>
+          </div>
+          {moments.length > 0 && (
+            <div className="panel panel-pad">
+              <h2 className="t-3" style={{ marginBottom: 6 }}>Your key moments</h2>
+              {moments.map((m) => (
+                <div key={m.ply} className="row" style={{ padding: '8px 0', borderTop: '1px solid var(--rule)' }}>
+                  <ClassIcon cls={m.cls} size={20} />
+                  <b className="num">{Math.ceil(m.ply / 2)}{m.color === 'w' ? '.' : '…'} {m.san}</b>
+                  <span className="quiet t-small grow">{(m.motifs ?? []).filter((x) => x !== 'opening' && x !== 'endgame').map((x) => MOTIF_INFO[x].label.toLowerCase()).join(', ') || CLASS_LABEL[m.cls].toLowerCase()}</span>
+                  <span className="faint num t-small">best was {m.bestSan}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <div className="sum-table">
-          {ORDER.map((c, i) => (
-            <motion.div key={c} className="sum-row" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.3 + i * 0.05 }}>
-              <span className="mono sum-n" style={{ color: CLASS_COLOR[c] }}>{a.white.counts[c]}</span>
-              <span className="sum-cls">
-                <ClassIcon cls={c} size={22} /> {CLASS_LABEL[c]}
-              </span>
-              <span className="mono sum-n" style={{ color: CLASS_COLOR[c] }}>{a.black.counts[c]}</span>
-            </motion.div>
-          ))}
-        </div>
-        <div className="sum-phases">
-          {(['opening', 'middlegame', 'endgame'] as const).map((p) => (
-            <div key={p} className="phase">
-              <PhaseDot v={a.white.phases[p]} />
-              <span className="muted">{p}</span>
-              <PhaseDot v={a.black.phases[p]} />
-            </div>
-          ))}
-        </div>
-        <div className="sum-actions">
-          {keyMoments > 0 && (
-            <motion.button className="btn primary big pulse" onClick={() => onStart(true)} whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.95 }}>
-              🧠 Learn mode — fix your {keyMoments} key moment{keyMoments > 1 ? 's' : ''}
-            </motion.button>
           )}
-          <motion.button className={`btn ${keyMoments ? '' : 'primary'} big`} onClick={() => onStart(false)} whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.95 }}>
-            ▶ Step through the game
-          </motion.button>
-          <a className="btn ghost" href={game.url} target="_blank" rel="noreferrer">View on chess.com ↗</a>
+        </div>
+        <div className="panel panel-pad">
+          <table className="tally">
+            <thead>
+              <tr>
+                <td className="n t-small" style={{ fontSize: 13, fontWeight: 600, fontVariationSettings: "'wdth' 100" }}>{game.white.username.slice(0, 8)}</td>
+                <td />
+                <td className="n t-small" style={{ fontSize: 13, fontWeight: 600, fontVariationSettings: "'wdth' 100" }}>{game.black.username.slice(0, 8)}</td>
+              </tr>
+            </thead>
+            <tbody>
+              {ORDER.map((c) => (
+                <tr key={c}>
+                  <td className={`n cls-text-${c} ${a.white.counts[c] ? '' : 'zero'}`}>{a.white.counts[c]}</td>
+                  <td><span className="label" style={{ justifyContent: 'center' }}><ClassIcon cls={c} size={20} /> {CLASS_LABEL[c]}</span></td>
+                  <td className={`n cls-text-${c} ${a.black.counts[c] ? '' : 'zero'}`}>{a.black.counts[c]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
   );
 }
 
-function PhaseDot({ v }: { v: number | null }) {
-  if (v === null) return <span className="phase-dot muted">—</span>;
-  const c = v >= 90 ? '#7fc241' : v >= 75 ? '#98c44a' : v >= 60 ? '#f5c430' : v >= 45 ? '#ff9a3c' : '#f2382f';
-  return <span className="phase-dot mono" style={{ background: c }}>{v}</span>;
+/** Positions along a SAN line starting at fen. */
+export function lineFens(fen: string, line: string[]): { fen: string; from: string; to: string; san: string }[] {
+  const c = new Chess(fen);
+  const out: { fen: string; from: string; to: string; san: string }[] = [];
+  for (const san of line) {
+    try {
+      const m = c.move(san);
+      out.push({ fen: c.fen(), from: m.from, to: m.to, san: m.san });
+    } catch {
+      break;
+    }
+  }
+  return out;
 }
 
-type Retry = { status: 'idle' | 'thinking' | 'wrong' | 'right' | 'revealed'; tries: number; msg?: string; userMove?: [string, string]; fen?: string };
-
-function Stepper({ a, game, gameId, learn }: { a: GameAnalysis; game: StoredGame; gameId: string; learn: boolean }) {
+function Browse({ a, game }: { a: GameAnalysis; game: StoredGame }) {
   const moves = a.moves;
   const userColor = game.userColor;
-  const keyMoments = useMemo(() => moves.filter((m) => m.color === userColor && KEY.has(m.cls)), [moves, userColor]);
-  const [ply, setPly] = useState(learn && keyMoments.length ? keyMoments[0].ply - 1 : 0);
-  const [retry, setRetry] = useState<Retry | null>(learn && keyMoments.length ? { status: 'idle', tries: 0 } : null);
-  const [learnIdx, setLearnIdx] = useState(0);
-  const [learnDone, setLearnDone] = useState(false);
-  const [showBest, setShowBest] = useState(true);
-  const [nonce, setNonce] = useState(0);
-  const boardRef = useRef<HTMLDivElement>(null);
+  const [ply, setPly] = useState(0);
+  const [variation, setVariation] = useState<{ base: AnalysedMove; idx: number } | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const reviewedRef = useRef(false);
-  const st = useStore();
-
-  const cur: AnalysedMove | undefined = moves[ply - 1];
-  const retryMove: AnalysedMove | undefined = retry ? moves[ply] : undefined; // in retry we sit BEFORE the move
-
   const go = useCallback(
-    (p: number, fromStep = false) => {
+    (p: number, stepped = false) => {
       const np = Math.max(0, Math.min(moves.length, p));
-      setRetry(null);
+      setVariation(null);
       setPly(np);
       const m = moves[np - 1];
-      if (!m || !fromStep) return;
+      if (!m || !stepped) return;
       if (m.san.includes('+')) sfx.check();
       else if (m.san.includes('x')) sfx.capture();
       else sfx.move();
-      if (m.cls === 'brilliant') {
-        setTimeout(() => sfx.brilliant(), 150);
-        celebrateClass('brilliant');
-      } else if (m.cls === 'great') {
-        setTimeout(() => sfx.great(), 150);
-        celebrateClass('great');
+      if (m.cls === 'brilliant' || m.cls === 'great') {
+        setTimeout(() => (m.cls === 'brilliant' ? sfx.brilliant() : sfx.great()), 120);
+        celebrateClass(m.cls);
       } else if (m.cls === 'blunder' && m.color === userColor) {
         sfx.blunder();
-        shake(boardRef.current, 6);
+        shake(stageRef.current, 5);
       }
     },
     [moves, userColor],
@@ -210,7 +212,7 @@ function Stepper({ a, game, gameId, learn }: { a: GameAnalysis; game: StoredGame
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (retry) return;
+      if ((e.target as HTMLElement).closest('input, textarea')) return;
       if (e.key === 'ArrowRight') go(ply + 1, true);
       else if (e.key === 'ArrowLeft') go(ply - 1);
       else if (e.key === 'Home') go(0);
@@ -218,217 +220,105 @@ function Stepper({ a, game, gameId, learn }: { a: GameAnalysis; game: StoredGame
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [ply, go, retry, moves.length]);
+  }, [ply, go, moves.length]);
 
   useEffect(() => {
-    if (!reviewedRef.current && (ply === moves.length || learnDone)) {
+    if (!reviewedRef.current && ply === moves.length) {
       reviewedRef.current = true;
-      const k = `reviewed:${gameId}`;
+      const k = `reviewed:${game.id}`;
       if (!localStorage.getItem(k)) {
         localStorage.setItem(k, '1');
-        void markReviewed();
-        st.addXP(25);
+        void markReviewed(); // XP is earned in Learn mode, not by scrolling to the end
       }
     }
-  }, [ply, learnDone]);
+  }, [ply]);
 
+  const cur = moves[ply - 1];
   const orientation = userColor === 'w' ? 'white' : 'black';
+  const best = cur && BAD.has(cur.cls) && cur.bestUci !== cur.uci ? cur : null;
+  const bestLine = useMemo(() => (best ? lineFens(best.fenBefore, best.bestLineSan) : []), [best]);
 
-  // --- Retry / Learn-mode logic ---
-  const startRetry = () => {
-    if (!cur) return;
-    setPly(cur.ply - 1);
-    setRetry({ status: 'idle', tries: 0 });
-  };
-
-  const onRetryMove = async (from: string, to: string, promo?: string) => {
-    if (!retryMove || !retry) return;
-    setRetry({ ...retry, status: 'thinking', userMove: [from, to] });
-    const res = await verifyMove(retryMove.fenBefore, from + to + (promo ?? ''), retryMove.bestUci, retryMove.winBefore);
-    const rect = boardRef.current?.getBoundingClientRect();
-    const at = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 3 } : undefined;
-    if (res.ok) {
-      sfx.correct();
-      confettiBurst(['#7fc241', '#ffd34d', '#fff'], retry.tries === 0 ? 1.2 : 0.7);
-      st.addXP(retry.tries === 0 ? 20 : 10, at);
-      st.progressQuest('retry', 1);
-      st.stat('retriesFixed', 1);
-      // retrieving it now counts as a successful drill rep too
-      const d = await db.drills.get(`${gameId}:${retryMove.ply}`);
-      if (d && d.reps === 0) await db.drills.update(d.id, { lastSeen: Date.now() });
-      setRetry({ status: 'right', tries: retry.tries + 1, fen: res.fenAfter, userMove: [from, to], msg: res.exact ? `${res.san} — exactly the engine's move!` : `${res.san} works too! (within ${res.loss.toFixed(1)}% of best)` });
-    } else {
-      sfx.wrong();
-      shake(boardRef.current, 12);
-      setNonce((n) => n + 1);
-      setRetry({ status: retry.tries >= 1 ? 'revealed' : 'wrong', tries: retry.tries + 1, msg: `${res.san} isn't it — it drops ${res.loss.toFixed(0)}% winning chances.` });
-    }
-  };
-
-  const nextMoment = () => {
-    const ni = learnIdx + 1;
-    if (ni >= keyMoments.length) {
-      setLearnDone(true);
-      setRetry(null);
-      setPly(moves.length);
-      sfx.levelUp();
-      confettiBurst(['#ffd34d', '#1fd1b9', '#5b8def'], 1.6);
-      return;
-    }
-    setLearnIdx(ni);
-    setPly(keyMoments[ni].ply - 1);
-    setRetry({ status: 'idle', tries: 0 });
-    setNonce((n) => n + 1);
-  };
-
-  // --- Board state ---
-  let fen = ply === 0 ? START : moves[ply - 1].fenAfter;
+  let fen = ply === 0 ? START : cur.fenAfter;
   let lastMove: [string, string] | undefined = cur ? [cur.from, cur.to] : undefined;
   const arrows: Arrow[] = [];
   let badge: { square: string; cls: Classification } | null = cur ? { square: cur.to, cls: cur.cls } : null;
-  if (retry && retryMove) {
+  let evalScore = cur ? cur.scoreAfter : { cp: 20 };
+  if (variation && bestLine[variation.idx]) {
+    const v = bestLine[variation.idx];
+    fen = v.fen;
+    lastMove = [v.from, v.to];
     badge = null;
-    if (retry.status === 'right' && retry.fen) {
-      fen = retry.fen;
-      lastMove = retry.userMove;
-    }
-    if (retry.status === 'revealed' || retry.status === 'right')
-      arrows.push({ from: retryMove.bestUci.slice(0, 2), to: retryMove.bestUci.slice(2, 4), brush: 'best' });
-  } else if (cur && showBest && BAD.has(cur.cls) && cur.bestUci !== cur.uci) {
-    arrows.push({ from: cur.bestUci.slice(0, 2), to: cur.bestUci.slice(2, 4), brush: 'best' });
+    evalScore = variation.base.scoreBefore;
+  } else if (best) {
+    arrows.push({ from: best.bestUci.slice(0, 2), to: best.bestUci.slice(2, 4), brush: 'best' });
   }
-  const evalScore = retry ? retryMove?.scoreBefore : cur ? cur.scoreAfter : { cp: 20 };
   const top = userColor === 'w' ? game.black : game.white;
-  const bottom = selfOf(game);
+  const bottom = userColor === 'w' ? game.white : game.black;
+  const moveNo = cur ? `${Math.ceil(cur.ply / 2)}${cur.color === 'w' ? '.' : '…'}` : '';
 
   return (
-    <div className="review">
-      <div className="review-board-col">
-        <div className="player-row"><span className={`dot ${userColor === 'w' ? 'black' : 'white'}`} /> {top.username} <span className="muted mono">({top.rating})</span></div>
-        <div className="board-row" ref={boardRef}>
-          <EvalBar score={evalScore} orientation={orientation} />
-          <Board
-            fen={fen}
-            orientation={orientation}
-            lastMove={lastMove}
-            arrows={arrows}
-            badge={badge}
-            movable={!!retry && (retry.status === 'idle' || retry.status === 'wrong')}
-            onMove={onRetryMove}
-            nonce={nonce}
-          />
-        </div>
-        <div className="player-row"><span className={`dot ${userColor === 'w' ? 'white' : 'black'}`} /> {bottom.username} <span className="muted mono">({bottom.rating})</span></div>
-        <EvalGraph curve={a.winCurve} moves={moves} ply={ply} onSelect={(p) => go(p)} userColor={userColor} />
-      </div>
-
-      <div className="review-side">
-        {learn && !learnDone && keyMoments.length > 0 && (
-          <div className="learn-progress">
-            {keyMoments.map((m, i) => (
-              <span key={m.ply} className={`lp-dot ${i < learnIdx ? 'done' : i === learnIdx ? 'cur' : ''}`} style={{ ['--c' as string]: CLASS_COLOR[m.cls] }} />
-            ))}
-            <span className="muted small">Key moment {learnIdx + 1}/{keyMoments.length}</span>
+    <div className="page">
+      <div className="review">
+        <div className="stage" ref={stageRef}>
+          <div className="stage-player"><span className={`piece-dot ${userColor === 'w' ? 'b' : 'w'}`} /> {top.username} <span className="rating num">{top.rating}</span></div>
+          <div className="board-line">
+            <EvalBar score={evalScore} orientation={orientation} />
+            <Board fen={fen} orientation={orientation} lastMove={lastMove} arrows={arrows} badge={badge} />
           </div>
-        )}
+          <div className="stage-player"><span className={`piece-dot ${userColor}`} /> {bottom.username} <span className="rating num">{bottom.rating}</span></div>
+          <Timeline curve={a.winCurve} moves={moves} ply={ply} onSelect={(p) => go(p)} userColor={userColor} />
+          <div className="transport on-stage" style={{ marginTop: 14 }}>
+            <button className="key sq" onClick={() => go(0)} aria-label="First move">⏮</button>
+            <button className="key sq" onClick={() => go(ply - 1)} aria-label="Previous move">◀</button>
+            <button className="key sq go" onClick={() => go(ply + 1, true)} aria-label="Next move">▶</button>
+            <button className="key sq" onClick={() => go(moves.length)} aria-label="Last move">⏭</button>
+            <span className="grow" />
+            <button
+              className="key"
+              onClick={() => {
+                const next = moves.find((m) => m.ply > ply && m.color === userColor && BAD.has(m.cls));
+                if (next) go(next.ply, true);
+              }}
+            >
+              Next mistake
+            </button>
+          </div>
+        </div>
 
-        <AnimatePresence mode="wait">
-          {learnDone ? (
-            <motion.div key="done" className="coach card done-card" initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
-              <div className="big-emoji">🏁</div>
-              <h2>Key moments cleared!</h2>
-              <p className="muted">All {keyMoments.length} positions are now in your mistake bank — you'll see them again just before you'd forget them.</p>
-              <div className="row gap">
-                <a className="btn primary" href="#/train/session">Train now</a>
-                <button className="btn" onClick={() => go(0)}>Replay game</button>
-              </div>
-            </motion.div>
-          ) : retry && retryMove ? (
-            <motion.div key={`retry-${ply}-${retry.status}`} className={`coach card retry ${retry.status}`} initial={{ y: 12, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
-              <div className="coach-head">
-                <span className="coach-avatar">🎯</span>
-                <div>
-                  <div className="coach-title">{retry.status === 'right' ? 'Nailed it!' : retry.status === 'revealed' ? 'Here was the move' : 'Find a better move'}</div>
-                  <div className="muted small">
-                    You played <b>{retryMove.san}</b> here ({CLASS_LABEL[retryMove.cls].toLowerCase()}). {retryMove.color === 'w' ? 'White' : 'Black'} to move.
+        <aside className="review-side">
+          {cur ? (
+            <Verdict cls={cur.cls} san={cur.san} moveNo={moveNo} sub={`eval ${formatScore(cur.scoreAfter)}`} />
+          ) : (
+            <div className="verdict neutral">
+              <div className="verdict-word display" style={{ fontSize: 40 }}>Start</div>
+              <div className="verdict-move">{a.opening ?? 'Starting position'}</div>
+            </div>
+          )}
+          {cur && (
+            <div className="panel">
+              <Coach move={cur} mine={cur.color === userColor} />
+              {best && bestLine.length > 0 && (
+                <div style={{ padding: '0 20px 18px' }}>
+                  <p className="t-small quiet" style={{ marginBottom: 8 }}>Better was {best.bestSan}. Tap through the line:</p>
+                  <div className="line-chips">
+                    {bestLine.map((v, i) => (
+                      <button key={i} className={`line-chip ${variation?.idx === i ? 'now' : ''}`} onClick={() => setVariation({ base: best, idx: i })}>
+                        {v.san}
+                      </button>
+                    ))}
+                    {variation && <button className="line-chip" onClick={() => setVariation(null)}>Back to game</button>}
                   </div>
                 </div>
-              </div>
-              {retry.status === 'thinking' && <p className="muted"><span className="spinner" /> Checking with Stockfish…</p>}
-              {retry.msg && <p className={retry.status === 'right' ? 'good' : 'bad'}>{retry.msg}</p>}
-              {retry.status === 'idle' && retryMove.motifs?.length > 0 && (
-                <p className="hint muted small">Hint: think about <b>{MOTIF_INFO[retryMove.motifs[0]].label.toLowerCase()}</b>.</p>
               )}
-              {(retry.status === 'revealed' || retry.status === 'right') && (
-                <p className="small">Best: <b>{retryMove.bestSan}</b> <span className="muted">— {retryMove.bestLineSan.slice(0, 5).join(' ')}</span></p>
+              {cur.color === userColor && KEY.has(cur.cls) && (
+                <div style={{ padding: '0 20px 20px' }}>
+                  <a className="key ink" href={`#/review/${encodeURIComponent(game.id)}/learn`}>Practise this moment</a>
+                </div>
               )}
-              <div className="row gap">
-                {retry.status === 'wrong' && <button className="btn" onClick={() => setRetry({ status: 'revealed', tries: retry.tries, msg: retry.msg })}>Show me</button>}
-                {(retry.status === 'right' || retry.status === 'revealed') &&
-                  (learn ? (
-                    <button className="btn primary" onClick={nextMoment}>{learnIdx + 1 >= keyMoments.length ? 'Finish ✓' : 'Next moment →'}</button>
-                  ) : (
-                    <button className="btn primary" onClick={() => go(retryMove.ply)}>Continue</button>
-                  ))}
-                {!learn && retry.status !== 'right' && <button className="btn ghost" onClick={() => go(retryMove.ply)}>Cancel</button>}
-              </div>
-            </motion.div>
-          ) : (
-            <motion.div key={`c-${ply}`} className="coach card" initial={{ y: 12, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ type: 'spring', stiffness: 400, damping: 30 }} style={{ ['--accent' as string]: cur ? CLASS_COLOR[cur.cls] : '#5b8def' }}>
-              {cur ? (
-                <>
-                  <div className="coach-head">
-                    <ClassIcon cls={cur.cls} size={36} />
-                    <div>
-                      <div className="coach-title" style={{ color: CLASS_COLOR[cur.cls] }}>
-                        {cur.san} is {['inaccuracy', 'excellent'].includes(cur.cls) ? 'an' : 'a'} {CLASS_LABEL[cur.cls].toLowerCase()}{['brilliant', 'great'].includes(cur.cls) ? ' move' : ''}
-                      </div>
-                      <div className="mono muted small">eval {formatScore(cur.scoreAfter)}</div>
-                    </div>
-                  </div>
-                  <p>{cur.comment}</p>
-                  {BAD.has(cur.cls) && (
-                    <p className="small">Best line: <b>{cur.bestLineSan.slice(0, 6).join(' ')}</b></p>
-                  )}
-                  {cur.motifs?.length > 0 && cur.color === userColor && (
-                    <div className="motifs">
-                      {cur.motifs.map((m) => <span key={m} className="motif">{MOTIF_INFO[m].emoji} {MOTIF_INFO[m].label}</span>)}
-                    </div>
-                  )}
-                  <div className="row gap">
-                    {BAD.has(cur.cls) && cur.color === userColor && <button className="btn primary" onClick={startRetry}>↺ Retry</button>}
-                    {BAD.has(cur.cls) && <button className="btn ghost" onClick={() => setShowBest((s) => !s)}>{showBest ? 'Hide' : 'Show'} best</button>}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="coach-head"><span className="coach-avatar">♟️</span><div className="coach-title">{a.opening ?? 'Starting position'}</div></div>
-                  <p className="muted">Use → / ← or the buttons to step through. Your mistakes have a Retry button — find the better move yourself.</p>
-                </>
-              )}
-            </motion.div>
+            </div>
           )}
-        </AnimatePresence>
-
-        <div className="controls">
-          <button className="btn icon" onClick={() => go(0)} disabled={!!retry}>⏮</button>
-          <button className="btn icon" onClick={() => go(ply - 1)} disabled={!!retry}>◀</button>
-          <button className="btn icon primary" onClick={() => go(ply + 1, true)} disabled={!!retry}>▶</button>
-          <button className="btn icon" onClick={() => go(moves.length)} disabled={!!retry}>⏭</button>
-          <span className="spacer" />
-          <button
-            className="btn ghost small"
-            disabled={!!retry}
-            onClick={() => {
-              const next = moves.find((m) => m.ply > ply && m.color === userColor && BAD.has(m.cls));
-              if (next) go(next.ply, true);
-            }}
-          >
-            Next mistake ⤼
-          </button>
-        </div>
-        <MoveList moves={moves} ply={ply} onSelect={(p) => !retry && go(p)} />
-        <div className="muted small opp-line">vs {opponentOf(game).username} · depth {a.depth} · {game.timeClass}</div>
+          <MoveList moves={moves} ply={ply} onSelect={(p) => go(p)} />
+        </aside>
       </div>
     </div>
   );

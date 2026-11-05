@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { emit, type Rarity } from './bus';
-import { bumpActivity, today } from './db';
+import { bumpActivity, today, db, notifyOutbox, syncTimestamp } from './db';
 
 // ---------------- Levels ----------------
 export const xpForLevel = (l: number) => 50 * l * (l - 1); // cumulative XP to reach level l
@@ -89,7 +89,9 @@ export const BOARD_THEMES: { id: string; label: string; light: string; dark: str
 
 export type Depth = 12 | 16 | 20;
 
-interface State {
+export interface State {
+  updatedAt: number;
+  hydrate: (partial: Partial<ProgressState>) => void;
   username: string | null;
   avatar?: string;
   displayName?: string;
@@ -101,13 +103,15 @@ interface State {
   unlockedThemes: string[];
   chests: number;
   trainingRating: number;
-  stats: { drillsSolved: number; drillsFailed: number; gamesReviewed: number; bestCombo: number; rushBest: number; retriesFixed: number };
+  stats: { drillsSolved: number; drillsFailed: number; gamesReviewed: number; bestCombo: number; rushBest: number; retriesFixed: number; mastered?: number };
   lastSyncAt: number;
   // actions
   connect: (username: string, avatar?: string, displayName?: string) => void;
   disconnect: () => void;
   setSetting: <K extends keyof State['settings']>(k: K, v: State['settings'][K]) => void;
-  addXP: (amount: number, at?: { x: number; y: number }) => void;
+  addXP: (amount: number, at?: { x: number; y: number }, opts?: { countsForStreak?: boolean; crit?: boolean }) => void;
+  onMastered: () => void;
+  recordMastered: (count: number) => void;
   ensureDay: () => void;
   progressQuest: (kind: QuestKind, value: number, mode?: 'add' | 'max') => void;
   unlock: (id: string) => void;
@@ -117,11 +121,35 @@ interface State {
   setSynced: () => void;
 }
 
-const yesterday = () => today(new Date(Date.now() - 86_400_000));
+export type ProgressState = Pick<State, 'username' | 'avatar' | 'displayName' | 'settings' | 'xp' | 'streak' | 'quests' | 'achievements' | 'unlockedThemes' | 'chests' | 'trainingRating' | 'stats' | 'updatedAt'>;
+export function progressSnapshot(state: State): ProgressState {
+  const { username, avatar, displayName, settings, xp, streak, quests, achievements, unlockedThemes, chests, trainingRating, stats, updatedAt } = state;
+  return { username, avatar, displayName, settings, xp, streak, quests, achievements, unlockedThemes, chests, trainingRating, stats, updatedAt };
+}
+let hydrating = false;
+let progressTimer: ReturnType<typeof setTimeout> | undefined;
+let dirtyProgress = false;
+export async function flushProgress() {
+  clearTimeout(progressTimer);
+  if (!dirtyProgress) return;
+  dirtyProgress = false;
+  try {
+    await db.outbox.put({ id: 'progress:state', collection: 'progress', key: 'state', updated_at: new Date(useStore.getState().updatedAt).toISOString() });
+    notifyOutbox();
+  } catch (error) { dirtyProgress = true; throw error; }
+}
+
+// Use calendar dates so daylight-saving changes do not affect missed days.
+const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / 86_400_000;
 
 export const useStore = create<State>()(
   persist(
     (set, get) => ({
+      updatedAt: 0,
+      hydrate: (partial) => {
+        hydrating = true;
+        try { set(progressSnapshot({ ...get(), ...partial, stats: { ...get().stats, ...partial.stats } })); } finally { hydrating = false; }
+      },
       username: null,
       settings: { depth: 16, sound: true, autoAnalyse: true, notify: true, boardTheme: 'classic' },
       xp: 0,
@@ -129,9 +157,9 @@ export const useStore = create<State>()(
       quests: { day: '', list: [] },
       achievements: [],
       unlockedThemes: ['classic', 'ocean', 'wood'],
-      chests: 1,
+      chests: 0,
       trainingRating: 1200,
-      stats: { drillsSolved: 0, drillsFailed: 0, gamesReviewed: 0, bestCombo: 0, rushBest: 0, retriesFixed: 0 },
+      stats: { drillsSolved: 0, drillsFailed: 0, gamesReviewed: 0, bestCombo: 0, rushBest: 0, retriesFixed: 0, mastered: 0 },
       lastSyncAt: 0,
 
       connect: (username, avatar, displayName) => set({ username, avatar, displayName }),
@@ -145,22 +173,21 @@ export const useStore = create<State>()(
         // streak decays silently if a day was missed (freezes are consumed on next activity)
       },
 
-      addXP: (amount, at) => {
+      addXP: (amount, at, opts) => {
         get().ensureDay();
-        // Variable-ratio reward: 1 in 8 gains is a "critical" double.
-        const crit = amount >= 5 && Math.random() < 0.125;
+        const crit = opts?.crit === true;
         const gain = crit ? amount * 2 : amount;
         const before = levelFromXp(get().xp);
         const xp = get().xp + gain;
         // streak update
         const s = { ...get().streak };
         const d = today();
-        if (s.lastDay !== d) {
-          if (s.lastDay === yesterday()) s.count++;
-          else if (s.lastDay && s.freezes > 0 && s.lastDay === today(new Date(Date.now() - 2 * 86_400_000))) {
-            s.freezes--;
+        if (opts?.countsForStreak !== false && s.lastDay !== d) {
+          const missed = s.lastDay ? Math.max(0, dayNumber(d) - dayNumber(s.lastDay) - 1) : 0;
+          if (s.lastDay && missed <= s.freezes) {
+            s.freezes -= missed;
             s.count++;
-            emit({ type: 'toast', text: 'Streak Freeze used — your streak survived!', emoji: '🧊', tone: 'info' });
+            if (missed) emit({ type: 'toast', text: `${missed} Streak Freezes used — your streak survived!`, emoji: '🧊', tone: 'info' });
           } else s.count = 1;
           s.lastDay = d;
           s.best = Math.max(s.best, s.count);
@@ -173,7 +200,6 @@ export const useStore = create<State>()(
         if (s.count >= 30) get().unlock('streak-30');
         const after = levelFromXp(xp);
         if (after > before) {
-          set({ chests: get().chests + 1 });
           emit({ type: 'levelup', level: after, title: titleFor(after) });
         }
       },
@@ -195,7 +221,7 @@ export const useStore = create<State>()(
         set({ quests: { ...q, list } });
         if (reward) {
           setTimeout(() => get().addXP(reward), 900);
-          if (list.every((x) => x.done)) set({ chests: get().chests + 1 });
+          if (list.length === 3 && list.every((x) => x.done)) set({ chests: get().chests + 1 });
         }
       },
 
@@ -209,12 +235,23 @@ export const useStore = create<State>()(
 
       stat: (k, v, mode = 'add') => {
         const stats = { ...get().stats };
-        stats[k] = mode === 'add' ? stats[k] + v : Math.max(stats[k], v);
+        stats[k] = mode === 'add' ? (stats[k] ?? 0) + v : Math.max(stats[k] ?? 0, v);
         set({ stats });
         if (stats.drillsSolved >= 10) get().unlock('solve-10');
         if (stats.drillsSolved >= 100) get().unlock('solve-100');
         if (stats.bestCombo >= 10) get().unlock('combo-10');
         if (stats.rushBest >= 15) get().unlock('rush-15');
+      },
+
+      onMastered: () => get().recordMastered((get().stats.mastered ?? 0) + 1),
+      // Absolute lifetime count: repeated observations do not award duplicate chests.
+      recordMastered: (count) => {
+        if (!Number.isFinite(count)) return;
+        const before = get().stats.mastered ?? 0;
+        const mastered = Math.max(before, Math.floor(count));
+        const chests = get().chests + Math.floor(mastered / 5) - Math.floor(before / 5);
+        set({ stats: { ...get().stats, mastered }, chests });
+        if (mastered >= 10) get().unlock('master-10');
       },
 
       openChest: () => {
@@ -235,7 +272,7 @@ export const useStore = create<State>()(
         }
         set(patch);
         emit({ type: 'chest', rarity, xp, extra });
-        setTimeout(() => get().addXP(xp), 1600);
+        setTimeout(() => get().addXP(xp, undefined, { countsForStreak: false }), 1600);
         if (rarity === 'legendary') get().unlock('legendary');
       },
 
@@ -247,6 +284,23 @@ export const useStore = create<State>()(
         return next - r;
       },
     }),
-    { name: 'chesspersonal-progress', version: 1 },
+    { name: 'chesspersonal-progress', version: 2,
+      migrate: (persisted) => {
+        const state = persisted as Partial<ProgressState>;
+        return { ...state, stats: { ...state.stats, mastered: state.stats?.mastered ?? 0 } };
+      },
+    },
   ),
 );
+
+// Observe all progress mutations, including callers using setState directly.
+useStore.subscribe((state, previous) => {
+  if (hydrating) return;
+  const current = progressSnapshot(state), before = progressSnapshot(previous);
+  if (JSON.stringify(current) === JSON.stringify(before)) return;
+  hydrating = true;
+  try { useStore.setState({ updatedAt: Date.parse(syncTimestamp()) }); } finally { hydrating = false; }
+  dirtyProgress = true;
+  clearTimeout(progressTimer);
+  progressTimer = setTimeout(() => { void flushProgress().catch(() => { /* next sync retries */ }); }, 200);
+});

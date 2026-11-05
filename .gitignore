@@ -3,6 +3,8 @@ dist
 .vercel
 public/engine
 *.log
-.env*
+.env*.local
+.env.supabase*
 .DS_Store
 .playwright-mcp
+supabase/.temp

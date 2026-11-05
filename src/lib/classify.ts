@@ -95,8 +95,6 @@ export function classify(i: ClassifyInput): { cls: Classification; loss: number;
   const played = i.move.from + i.move.to + (i.move.promotion ?? '');
   const isBest = played === i.bestUci;
   const loss = isBest ? 0 : Math.max(0, i.winBefore - i.winAfter) / 100;
-  const sac = sacrificeAmount(i.fenAfter, i.move);
-
   if (i.legalCount === 1) return { cls: 'forced', loss, sacrifice: 0 };
   if (i.isBook) return { cls: 'book', loss, sacrifice: 0 };
 
@@ -108,15 +106,27 @@ export function classify(i: ClassifyInput): { cls: Classification; loss: number;
   else if (loss < 0.2) cls = 'mistake';
   else cls = 'blunder';
 
+  // EP boundaries: <2% excellent, <5% good, <10% inaccuracy,
+  // <20% mistake, otherwise blunder. Sacrifice SEE is only needed for
+  // sound moves, not every move (legal-capture generation is expensive).
+  const sac = cls === 'best' || cls === 'excellent' ? sacrificeAmount(i.fenAfter, i.move) : 0;
+  const recapture = !!(i.prevMove?.captured && i.move.captured && i.prevMove.to === i.move.to);
+
   // Miss: a winning chance (usually gifted by the opponent) that slipped away.
   if ((cls === 'mistake' || cls === 'blunder' || cls === 'inaccuracy') && i.winAfter >= 30) {
     const missedMate = mateFor(i.scoreBefore, mover) && !mateFor(i.scoreAfter, mover);
-    const opportunity = i.prevOppLoss >= 0.1 && i.winBefore >= 60 && loss >= 0.1;
+    // A miss must actually surrender the newly available winning outcome.
+    const opportunity = i.prevOppLoss >= 0.1 && i.winBefore >= 70 && i.winAfter < 65 && loss >= 0.1;
     if (missedMate || opportunity) cls = 'miss';
   }
 
-  // Brilliant: a sound sacrifice of real material that is (nearly) the best move.
-  if ((cls === 'best' || cls === 'excellent') && sac >= 2 && i.winAfter >= 50 && i.winBefore < 97) {
+  // Brilliant is deliberately conservative: an exact best, NEW offer of a
+  // minor piece or more, >=2 pawns net, >=55% chances, not already crushing
+  // (90%), and not a routine recapture or an unrelated hanging piece.
+  const offered = sac >= 2 ? bestCaptureGain(i.fenAfter).move : undefined;
+  const opponent: Color = mover === 'w' ? 'b' : 'w';
+  const newOffer = offered?.to === i.move.to && !new Chess(i.move.before).isAttacked(i.move.from, opponent);
+  if (cls === 'best' && sac >= 2 && i.move.piece !== 'p' && newOffer && !recapture && i.winAfter >= 55 && i.winBefore < 90) {
     cls = 'brilliant';
   }
 
@@ -124,8 +134,9 @@ export function classify(i: ClassifyInput): { cls: Classification; loss: number;
   if (cls === 'best' && i.winSecond !== undefined) {
     const gap = i.winBefore - i.winSecond;
     const outcome = (w: number) => (w >= 68 ? 2 : w >= 32 ? 1 : 0);
-    const recapture = !!(i.prevMove?.captured && i.move.captured && i.prevMove.to === i.move.to);
-    if (gap >= 15 && outcome(i.winSecond) < outcome(i.winBefore) && !recapture && i.legalCount > 2) cls = 'great';
+    // >=20 percentage-point gap AND a changed outcome; routine recaptures,
+    // near-forced positions, and already decisive wins do not get a badge.
+    if (gap >= 20 && i.winBefore < 95 && outcome(i.winSecond) < outcome(i.winBefore) && !recapture && i.legalCount > 2) cls = 'great';
   }
 
   return { cls, loss, sacrifice: sac };
@@ -186,7 +197,7 @@ export function explain(args: {
   const opp: Color = mover === 'w' ? 'b' : 'w';
   const ev = `(${formatScore(args.scoreBefore)} → ${formatScore(args.scoreAfter)})`;
   const mateIn = (s: Score, c: Color) => (mateFor(s, c) ? Math.max(1, Math.round(Math.abs(s.mate!))) : 0);
-  const hang = bestCaptureGain(args.fenAfter);
+  const hang = cls === 'mistake' || cls === 'blunder' ? bestCaptureGain(args.fenAfter) : { gain: 0 };
   const hangTxt =
     hang.gain >= 3 && hang.move ? ` It leaves your ${PIECE_NAME[hang.move.captured!]} on ${hang.move.to} en prise.` : '';
   switch (cls) {

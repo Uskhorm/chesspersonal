@@ -77,6 +77,7 @@ export interface SideSummary {
 }
 
 export interface GameAnalysis {
+  updatedAt?: number; // cloud sync version
   gameId: string;
   depth: number;
   createdAt: number;
@@ -89,6 +90,7 @@ export interface GameAnalysis {
 }
 
 export interface StoredGame {
+  updatedAt?: number; // cloud sync version
   id: string; // chess.com uuid or url
   url: string;
   pgn: string;
@@ -108,6 +110,7 @@ export interface StoredGame {
 }
 
 export interface Drill {
+  updatedAt?: number; // cloud sync version
   id: string; // gameId:ply
   gameId: string;
   ply: number;

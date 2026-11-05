@@ -33,48 +33,40 @@ export function formatScore(s: Score | undefined): string {
   return (v > 0 ? '+' : '') + v.toFixed(Math.abs(v) >= 10 ? 0 : 1);
 }
 
-/** Lichess move-accuracy formula from win% drop (mover POV). */
+/**
+ * Exponential accuracy from expected-points drop (mover POV). The 0.045
+ * decay was selected on six public reviewed games (three more held out),
+ * rather than claiming to reproduce chess.com's proprietary CAPS formula.
+ * Keep the EP conversion above: labels and accuracy share the same chances.
+ */
 export function moveAccuracy(winBefore: number, winAfter: number): number {
   const diff = Math.max(0, winBefore - winAfter);
-  const raw = 103.1668100711649 * Math.exp(-0.04354415386753951 * diff) - 3.166924740191411 + 1;
+  const raw = 103.1668100711649 * Math.exp(-0.045 * diff) - 3.166924740191411 + 1;
   return Math.max(0, Math.min(100, raw));
 }
 
-function stdDev(xs: number[]): number {
-  const m = xs.reduce((a, b) => a + b, 0) / xs.length;
-  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
-}
-
 /**
- * Lichess-style game accuracy: volatility-weighted mean blended with harmonic mean.
+ * Harmonic mean of move accuracies: meaningful errors carry more weight than
+ * a long tail of automatic moves in a decided game. A floor of 1 keeps a
+ * single zero from annihilating the whole score. The calibration harness
+ * retains the previous volatility/harmonic blend for before/after reporting.
  * winCurve = white win% for each position (length = plies + 1).
+ * firstColor handles PGNs starting from a black-to-move FEN.
  */
-export function gameAccuracy(winCurve: number[], accs: number[], color: 'w' | 'b'): number {
+export function gameAccuracy(_winCurve: number[], accs: number[], color: 'w' | 'b', firstColor: 'w' | 'b' = 'w'): number {
   const n = accs.length;
   if (n === 0) return 0;
-  const win = Math.max(2, Math.min(8, Math.floor(winCurve.length / 10)));
-  const weights: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const start = Math.max(0, Math.min(i, winCurve.length - win));
-    const slice = winCurve.slice(start, start + win);
-    weights.push(Math.max(0.5, Math.min(12, stdDev(slice))));
-  }
-  let ws = 0;
-  let wsum = 0;
   let hs = 0;
   let cnt = 0;
   for (let i = 0; i < n; i++) {
-    const mover = i % 2 === 0 ? 'w' : 'b';
+    const mover = i % 2 === 0 ? firstColor : firstColor === 'w' ? 'b' : 'w';
     if (mover !== color) continue;
-    ws += accs[i] * weights[i];
-    wsum += weights[i];
     hs += 1 / Math.max(accs[i], 1);
     cnt++;
   }
   if (!cnt) return 0;
-  const weighted = ws / wsum;
   const harmonic = cnt / hs;
-  return Math.round(((weighted + harmonic) / 2) * 10) / 10;
+  return Math.round(harmonic * 10) / 10;
 }
 
 /** Rough accuracy -> rating curve (an estimate, not chess.com's model). */

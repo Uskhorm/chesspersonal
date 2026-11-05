@@ -10,6 +10,7 @@ interface Job {
   resolve: (e: PositionEval) => void;
   reject: (e: unknown) => void;
   onInfo?: (e: PositionEval) => void;
+  workerIndex?: number;
 }
 
 /** One Stockfish 19 WASM instance speaking UCI over postMessage. */
@@ -81,7 +82,8 @@ class EngineWorker {
             resolve({ fen: job.fen, depth, lines: lines.filter(Boolean), source: 'local' });
           }
         };
-        this.send('ucinewgame');
+        // Keep the transposition table: consecutive positions share most of
+        // their search tree. A new position command does not require newgame.
         this.send(`position fen ${job.fen}`);
         this.send(`go depth ${job.depth}`);
       });
@@ -106,6 +108,7 @@ class EngineWorker {
 class EnginePool {
   private workers: EngineWorker[] = [];
   private queue: Job[] = [];
+  private generation = 0;
   readonly size: number;
 
   constructor() {
@@ -118,25 +121,53 @@ class EnginePool {
   }
 
   private pump() {
-    for (const w of this.workers) {
-      if (!w.busy && this.queue.length) {
-        const job = this.queue.shift()!;
+    for (const [index, w] of this.workers.entries()) {
+      const next = this.queue.findIndex((j) => j.workerIndex === undefined || j.workerIndex === index);
+      if (!w.busy && next >= 0) {
+        const [job] = this.queue.splice(next, 1);
         w.run(job).then(() => this.pump());
       }
     }
   }
 
   analyse(fen: string, depth: number, multipv = 2, onInfo?: (e: PositionEval) => void, priority = false): Promise<PositionEval> {
+    return this.submit(fen, depth, multipv, onInfo, priority);
+  }
+
+  private submit(fen: string, depth: number, multipv: number, onInfo?: (e: PositionEval) => void, priority = false, workerIndex?: number): Promise<PositionEval> {
     this.ensure();
     return new Promise((resolve, reject) => {
-      const job = { fen, depth, multipv, resolve, reject, onInfo };
+      const job = { fen, depth, multipv, resolve, reject, onInfo, workerIndex };
       if (priority) this.queue.unshift(job);
       else this.queue.push(job);
       this.pump();
     });
   }
 
+  /** Contiguous position chunks reuse hash within each worker, at full depth. */
+  async analyseBatch(fens: string[], depth: number, multipv = 2, onResult?: (e: PositionEval, index: number) => void): Promise<PositionEval[]> {
+    const results: PositionEval[] = new Array(fens.length);
+    const generation = this.generation;
+    let next = 0;
+    await Promise.all(Array.from({ length: this.size }, async (_, workerIndex) => {
+      while (next < fens.length) {
+        const start = next;
+        // Short consecutive runs retain useful hash without stranding workers
+        // on one expensive middlegame chunk.
+        next += 4;
+        for (let i = start; i < Math.min(fens.length, start + 4); i++) {
+          if (generation !== this.generation) throw new Error('cancelled');
+          results[i] = await this.submit(fens[i], depth, multipv, undefined, false, workerIndex);
+          if (generation !== this.generation) throw new Error('cancelled');
+          onResult?.(results[i], i);
+        }
+      }
+    }));
+    return results;
+  }
+
   cancelQueued() {
+    this.generation++;
     const q = this.queue;
     this.queue = [];
     for (const j of q) j.reject(new Error('cancelled'));
@@ -148,10 +179,10 @@ export const engine = new EnginePool();
 // ---------- Lichess cloud evaluation (free, CORS-enabled) ----------
 let cloudDisabledUntil = 0;
 
-export async function cloudEval(fen: string, multipv = 2): Promise<PositionEval | null> {
+export async function cloudEval(fen: string, multipv = 2, timeoutMs = 1200): Promise<PositionEval | null> {
   if (Date.now() < cloudDisabledUntil) return null;
   try {
-    const r = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=${multipv}`);
+    const r = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=${multipv}`, { signal: AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs))) });
     if (r.status === 429) {
       cloudDisabledUntil = Date.now() + 60_000;
       return null;

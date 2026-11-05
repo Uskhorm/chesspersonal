@@ -56,14 +56,18 @@ export interface AnalyseOptions {
   useCloud?: boolean;
 }
 
+/** Scores must use WHITE's point of view, regardless of the side to move. */
+export type PositionEvaluator = (fen: string, index: number) => Promise<PositionEval>;
+
 /** Evaluate every position of the game: Lichess cloud for opening positions, local Stockfish for the rest. */
-async function evaluatePositions(fens: string[], opts: AnalyseOptions): Promise<PositionEval[]> {
+async function evaluatePositions(fens: string[], opts: AnalyseOptions, history: Move[]): Promise<PositionEval[]> {
   const evals: PositionEval[] = new Array(fens.length);
   let done = 0;
   const tick = () => opts.onProgress?.(++done, fens.length);
 
   let cloudOk = opts.useCloud !== false;
-  const local: Promise<void>[] = [];
+  const cloudDeadline = Date.now() + 1200;
+  const local: number[] = [];
   for (let i = 0; i < fens.length; i++) {
     const t = terminalEval(fens[i]);
     if (t) {
@@ -71,34 +75,79 @@ async function evaluatePositions(fens: string[], opts: AnalyseOptions): Promise<
       tick();
       continue;
     }
-    if (cloudOk && i < 30) {
-      const c = await cloudEval(fens[i], 2);
-      if (c && c.lines.length >= Math.min(2, new Chess(fens[i]).moves().length)) {
+    if (cloudOk && i < 30 && Date.now() < cloudDeadline) {
+      const c = await cloudEval(fens[i], 2, cloudDeadline - Date.now());
+      if (c && c.depth >= opts.depth && c.lines.length >= Math.min(2, new Chess(fens[i]).moves().length)) {
         evals[i] = c;
         tick();
         continue;
       }
       cloudOk = false;
     }
-    local.push(
-      engine.analyse(fens[i], opts.depth, 2).then((e) => {
-        evals[i] = e;
-        tick();
-      }),
-    );
+    local.push(i);
   }
-  await Promise.all(local);
+  await engine.analyseBatch(local.map((i) => fens[i]), opts.depth, 1, (e, index) => {
+    evals[local[index]] = e;
+    tick();
+  });
+  // MultiPV 2 is needed only to award Great on a played best move. Search
+  // every position to the requested depth first; refine eligible moments at
+  // that same depth, preserving both lines for outcome-gap classification.
+  const refine = secondLineCandidates(history, evals);
+  await engine.analyseBatch(refine.map((i) => fens[i]), opts.depth, 2, (e, index) => {
+    evals[refine[index]] = e;
+  });
   return evals;
+}
+
+/** Shared by browser and benchmark; never synthesize/skip a position's eval. */
+export function secondLineCandidates(history: Move[], evals: PositionEval[]): number[] {
+  const out: number[] = [];
+  let inBook = true;
+  history.forEach((m, i) => {
+    const book = inBook ? lookupOpening(m.after) : null;
+    if (!book) inBook = false;
+    const e = evals[i];
+    const win = scoreToWin(e.lines[0].score, m.color);
+    const recapture = !!(history[i - 1]?.captured && m.captured && history[i - 1].to === m.to);
+    if (!book && !recapture && e.lines.length < 2 && e.lines[0].pv[0] === m.lan && win >= 32 && win < 95 && new Chess(m.before).moves().length > 2) out.push(i);
+  });
+  return out;
 }
 
 export async function analysePgn(gameId: string, pgn: string, opts: AnalyseOptions): Promise<GameAnalysis> {
   await loadOpenings();
   const chess = new Chess();
   chess.loadPgn(pgn);
+  return analyseWithEvaluator(gameId, pgn, opts, (fens: string[]) => evaluatePositions(fens, opts, chess.history({ verbose: true })), true);
+}
+
+/** Shared browser/Node pipeline. A batch evaluator can preserve worker affinity. */
+export function analyseWithEvaluator(
+  gameId: string, pgn: string, opts: AnalyseOptions, evaluator: PositionEvaluator, batch?: false,
+): Promise<GameAnalysis>;
+export function analyseWithEvaluator(
+  gameId: string, pgn: string, opts: AnalyseOptions, evaluator: (fens: string[]) => Promise<PositionEval[]>, batch: true,
+): Promise<GameAnalysis>;
+export async function analyseWithEvaluator(
+  gameId: string,
+  pgn: string,
+  opts: AnalyseOptions,
+  evaluator: PositionEvaluator | ((fens: string[]) => Promise<PositionEval[]>),
+  batch = false,
+): Promise<GameAnalysis> {
+  await loadOpenings();
+  const chess = new Chess();
+  chess.loadPgn(pgn);
   const history = chess.history({ verbose: true });
   if (!history.length) throw new Error('Game has no moves');
   const fens = [history[0].before, ...history.map((m) => m.after)];
-  const evals = await evaluatePositions(fens, opts);
+  const evals = batch
+    ? await (evaluator as (fens: string[]) => Promise<PositionEval[]>)(fens)
+    : await Promise.all(fens.map((fen, i) => (evaluator as PositionEvaluator)(fen, i)));
+  if (evals.length !== fens.length || evals.some((e, i) => e.fen !== fens[i] || !e.lines.length)) {
+    throw new Error('Evaluator must return one nonempty evaluation per position, in order');
+  }
 
   const clocks = parseClocks(pgn);
   const init = initialClock(pgn);
@@ -206,7 +255,7 @@ export async function analysePgn(gameId: string, pgn: string, opts: AnalyseOptio
     const counts = emptyCounts();
     for (const m of mine) counts[m.cls]++;
     const accs = moves.map((m) => m.accuracy);
-    const accuracy = gameAccuracy(winCurve, accs, c);
+    const accuracy = gameAccuracy(winCurve, accs, c, history[0].color);
     const phase = (pred: (m: AnalysedMove) => boolean) => {
       const xs = mine.filter(pred);
       return xs.length ? Math.round(xs.reduce((a, m) => a + m.accuracy, 0) / xs.length) : null;

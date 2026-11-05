@@ -3,17 +3,17 @@ import confetti from 'canvas-confetti';
 import type { Classification } from './types';
 
 export const CLASS_COLOR: Record<Classification, string> = {
-  brilliant: '#1fd1b9',
-  great: '#5b8def',
-  best: '#7fc241',
-  excellent: '#98c44a',
-  good: '#93b38a',
-  book: '#b08a63',
-  forced: '#8a9aa6',
-  inaccuracy: '#f5c430',
-  mistake: '#ff9a3c',
-  miss: '#ff6b6b',
-  blunder: '#f2382f',
+  brilliant: '#12b8a6',
+  great: '#4c7ef3',
+  best: '#5baa2e',
+  excellent: '#7db33f',
+  good: '#8fa88a',
+  book: '#a07e5a',
+  forced: '#8c96a3',
+  inaccuracy: '#e9b300',
+  mistake: '#f08a24',
+  miss: '#e5484d',
+  blunder: '#d7263d',
 };
 
 const layer = () => {
@@ -27,7 +27,7 @@ const layer = () => {
 };
 
 /** Radial particle burst at a point — fired on every meaningful click. */
-export function burst(x: number, y: number, color = '#ffd34d', count = 10, spread = 60) {
+export function burst(x: number, y: number, color = '#f2b705', count = 10, spread = 60) {
   const root = layer();
   const parts: HTMLElement[] = [];
   for (let i = 0; i < count; i++) {
@@ -54,7 +54,7 @@ export function burst(x: number, y: number, color = '#ffd34d', count = 10, sprea
 }
 
 /** Floating "+12 XP" text that rises and fades. */
-export function floatText(text: string, x: number, y: number, color = '#ffd34d', big = false) {
+export function floatText(text: string, x: number, y: number, color = '#6b4f00', big = false) {
   const el = document.createElement('div');
   el.className = 'fx-float' + (big ? ' big' : '');
   el.textContent = text;
@@ -138,7 +138,7 @@ export function confettiBurst(colors: string[], power = 1, origin?: { x: number;
 
 export function fireworks() {
   const end = Date.now() + 1400;
-  const colors = ['#ffd34d', '#1fd1b9', '#5b8def', '#ff6bd6'];
+  const colors = ['#f2b705', '#12b8a6', '#4c7ef3', '#1a1d24'];
   (function frame() {
     confetti({ particleCount: 6, angle: 60, spread: 55, origin: { x: 0, y: 0.7 }, colors });
     confetti({ particleCount: 6, angle: 120, spread: 55, origin: { x: 1, y: 0.7 }, colors });

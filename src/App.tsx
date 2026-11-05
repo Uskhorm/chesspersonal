@@ -1,17 +1,22 @@
-import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
-import { Hud } from './components/Hud';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { Topbar } from './components/Topbar';
 import { FxHost } from './components/FxHost';
 import { useStore } from './lib/store';
 import { startAutoSync } from './lib/sync';
-import { burst } from './lib/fx';
 import { sfx } from './lib/sound';
-import { Connect } from './pages/Connect';
+import { useAuth } from './lib/auth';
+import { scheduleStreakReminder } from './lib/pwa';
+import { db } from './lib/db';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { isMastered } from './lib/srs';
+import { Gate } from './pages/Gate';
 import { Home } from './pages/Home';
 import { Games } from './pages/Games';
 import { Review } from './pages/Review';
 import { Train } from './pages/Train';
 import { Profile } from './pages/Profile';
+
+const Insights = lazy(() => import('./pages/Insights').then((m) => ({ default: m.Insights })));
 
 function useHash() {
   const [hash, setHash] = useState(location.hash);
@@ -23,39 +28,60 @@ function useHash() {
   return hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
 }
 
-const NAV = [
-  { href: '#/', key: '', label: 'Home', icon: '🏠' },
-  { href: '#/train', key: 'train', label: 'Train', icon: '🧠' },
-  { href: '#/games', key: 'games', label: 'Games', icon: '♟️' },
-  { href: '#/profile', key: 'profile', label: 'Profile', icon: '🏆' },
-];
-
 export function App() {
   const username = useStore((s) => s.username);
   const ensureDay = useStore((s) => s.ensureDay);
   const route = useHash();
+  const token = useAuth((s) => s.token);
+  const routeKey = route.join('/');
 
   useEffect(() => {
     ensureDay();
   }, [ensureDay]);
-
   useEffect(() => {
     if (!username) return;
     return startAutoSync();
   }, [username]);
-
   useEffect(() => {
     window.scrollTo({ top: 0 });
-  }, [route.join('/')]);
+  }, [routeKey]);
+  // Streak-at-risk reminder (evening, once a day, only with notifications on).
+  useEffect(() => {
+    if (!username) return;
+    let due = 0;
+    const refresh = () => db.drills.where('due').below(Date.now()).count().then((n) => (due = n)).catch(() => {});
+    void refresh();
+    const iv = setInterval(refresh, 10 * 60_000);
+    const stop = scheduleStreakReminder(() => {
+      const s = useStore.getState();
+      return { streakCount: s.streak.count, lastActiveDay: s.streak.lastDay, dueCount: due, enabled: s.settings.notify };
+    });
+    return () => {
+      clearInterval(iv);
+      stop();
+    };
+  }, [username]);
+  // Mastery milestones feed chests (every 5th mistake retired for good).
+  const masteredCount = useLiveQuery(async () => (await db.drills.toArray()).filter(isMastered).length, []);
+  useEffect(() => {
+    if (masteredCount !== undefined) useStore.getState().recordMastered(masteredCount);
+  }, [masteredCount]);
+  // Signed-in sessions resume cloud sync on every load.
+  useEffect(() => {
+    if (!token) return;
+    let stop: (() => void) | undefined;
+    import('./lib/cloudsync').then((m) => {
+      m.start();
+      stop = m.stop;
+    });
+    return () => stop?.();
+  }, [token]);
 
-  // Every click gets a tiny particle pop + tick. Small, constant positive feedback.
+  // A soft key-click on every press: the interface should feel like hardware.
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      const t = (e.target as HTMLElement).closest('button, .clicky, a');
-      if (!t || (t as HTMLButtonElement).disabled) return;
-      const color = getComputedStyle(t).getPropertyValue('--burst').trim() || '#ffd34d';
-      burst(e.clientX, e.clientY, color, 7, 34);
-      sfx.click();
+      const t = (e.target as HTMLElement).closest('.key, .chip, .mv, .line-chip');
+      if (t && !(t as HTMLButtonElement).disabled) sfx.click();
     };
     addEventListener('pointerdown', onDown);
     return () => removeEventListener('pointerdown', onDown);
@@ -64,7 +90,7 @@ export function App() {
   if (!username) {
     return (
       <>
-        <Connect />
+        <Gate />
         <FxHost />
       </>
     );
@@ -82,6 +108,13 @@ export function App() {
     case 'games':
       view = <Games />;
       break;
+    case 'insights':
+      view = (
+        <Suspense fallback={<div className="page"><span className="spin lg" /></div>}>
+          <Insights />
+        </Suspense>
+      );
+      break;
     case 'profile':
       view = <Profile />;
       break;
@@ -90,28 +123,10 @@ export function App() {
   }
 
   return (
-    <div className="app">
-      <Hud />
-      <nav className="sidenav">
-        {NAV.map((n) => (
-          <a key={n.key} href={n.href} className={`nav-item ${page === n.key || (!page && !n.key) ? 'active' : ''}`}>
-            <span className="nav-icon">{n.icon}</span>
-            <span className="nav-label">{n.label}</span>
-          </a>
-        ))}
-      </nav>
-      <main className="main">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={route.join('/')}
-            initial={{ opacity: 0, y: 14, filter: 'blur(6px)' }}
-            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-            exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
-            transition={{ duration: 0.28, ease: [0.2, 0.9, 0.3, 1] }}
-          >
-            {view}
-          </motion.div>
-        </AnimatePresence>
+    <div className="shell">
+      <Topbar page={page === 'review' ? 'games' : page ?? ''} focus={(page === 'review' && route[2] === 'learn') || (page === 'train' && ['session', 'leak', 'rush'].includes(arg))} />
+      <main key={routeKey} className="route">
+        {view}
       </main>
       <FxHost />
     </div>

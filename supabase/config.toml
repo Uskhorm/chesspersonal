@@ -1,0 +1,4 @@
+project_id = "hindsight"
+
+[functions.api]
+verify_jwt = false

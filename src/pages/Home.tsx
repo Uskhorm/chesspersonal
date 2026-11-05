@@ -1,215 +1,183 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { motion } from 'motion/react';
-import { db } from '../lib/db';
+import { db, today } from '../lib/db';
 import { useStore } from '../lib/store';
 import { computeLeaks } from '../lib/learning';
-import { GameCard } from '../components/GameCard';
-import { countUp, staggerIn } from '../lib/fx';
-import { selfOf } from '../lib/chesscom';
 import { isMastered } from '../lib/srs';
 import { syncGames, useQueue } from '../lib/sync';
+import { Board } from '../components/Board';
+import { TapeRow } from '../components/TapeRow';
+import { ClassIcon, CLASS_LABEL } from '../components/ClassIcon';
+import { DAILY_GOAL } from '../components/constants';
+import { recovery } from '../lib/insights';
+import type { FsrsDrill } from '../lib/srs';
+
+const dateLine = () => new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
 
 export function Home() {
-  const { displayName, username, quests, ensureDay } = useStore();
+  const { quests, ensureDay, stats } = useStore();
   const games = useLiveQuery(() => db.games.orderBy('endTime').reverse().toArray(), []) ?? [];
   const analyses = useLiveQuery(() => db.analyses.toArray(), []) ?? [];
   const drills = useLiveQuery(() => db.drills.toArray(), []) ?? [];
+  const todayAct = useLiveQuery(() => db.activity.get(today()), []);
   const syncing = useQueue((s) => s.syncing);
   const syncErr = useQueue((s) => s.error);
 
-  useEffect(() => ensureDay(), [ensureDay]);
   useEffect(() => {
-    staggerIn(document.querySelectorAll('.home .card'), 60);
-  }, []);
+    ensureDay();
+  }, [ensureDay]);
 
-  const due = drills.filter((d) => d.due <= Date.now()).length;
+  const now = Date.now();
+  const due = drills.filter((d) => d.due <= now).sort((a, b) => a.due - b.due);
   const mastered = drills.filter(isMastered).length;
-  const latestUnreviewed = games.find((g) => g.analysed);
+  const rec = useMemo(() => recovery(drills as FsrsDrill[], analyses), [drills, analyses]);
   const leaks = useMemo(() => computeLeaks(games, analyses).filter((l) => l.motif !== 'opening' && l.motif !== 'endgame'), [games, analyses]);
-  const topLeak = leaks[0];
-
-  let cta: { title: string; sub: string; href: string; emoji: string };
-  if (due > 0) cta = { title: `Fix ${due} of your mistakes`, sub: `≈ ${Math.max(1, Math.round(due * 0.4))} min · spaced repetition`, href: '#/train/session', emoji: '🧠' };
-  else if (latestUnreviewed) cta = { title: 'Review your latest game', sub: 'Learn mode: find better moves yourself', href: `#/review/${encodeURIComponent(latestUnreviewed.id)}/learn`, emoji: '🔍' };
-  else if (topLeak) cta = { title: `Train: ${topLeak.label}`, sub: 'Targeted puzzles for your #1 leak', href: `#/train/leak`, emoji: topLeak.emoji };
-  else cta = { title: 'Play a game on chess.com', sub: "It'll be reviewed automatically when you finish", href: 'https://www.chess.com/play/online', emoji: '♟️' };
+  const unreviewed = games.find((g) => g.analysed && !localStorage.getItem(`reviewed:${g.id}`));
+  const xpToday = todayAct?.xp ?? 0;
+  const focusDrill = due[0];
+  const q = useQueue();
+  const importing = (games.length === 0 && syncing) || (analyses.length === 0 && !!q.current);
 
   return (
-    <div className="home">
-      <section className="home-hero card">
-        <div>
-          <div className="eyebrow">WELCOME BACK</div>
-          <h1 className="h1">Hey {displayName?.split(' ')[0] || username} 👋</h1>
-          <p className="muted">
-            {games.length} games synced · {analyses.length} reviewed · {drills.length} mistakes captured · {mastered} mastered
-            {syncing && ' · syncing…'}
-            {syncErr && <span className="err"> · {syncErr}</span>}
+    <div className="page">
+      <header style={{ marginBottom: 28 }}>
+        <p className="quiet">{dateLine()}</p>
+        {rec.mastered > 0 && (
+          <p className="recovered" style={{ marginTop: 10 }}>
+            <span className="display num">{rec.mastered}</span> mistakes retired for good, worth <span className="num">{Math.round(rec.winPctRecovered)}%</span> of winning chances
           </p>
-        </div>
-        <motion.a href={cta.href} target={cta.href.startsWith('http') ? '_blank' : undefined} className="cta" whileHover={{ scale: 1.03, rotate: -0.5 }} whileTap={{ scale: 0.96 }}>
-          <span className="cta-emoji">{cta.emoji}</span>
-          <span>
-            <span className="cta-title">{cta.title}</span>
-            <span className="cta-sub">{cta.sub}</span>
-          </span>
-          <span className="cta-arrow">→</span>
-        </motion.a>
-      </section>
+        )}
+        <h1 className="display t-hero" style={{ marginTop: 6 }}>
+          {due.length > 0 ? `${due.length} mistake${due.length > 1 ? 's' : ''} to fix` : unreviewed ? 'A game to review' : 'All caught up'}
+        </h1>
+      </header>
 
-      <div className="home-grid">
-        <section className="card quests">
-          <div className="card-head">
-            <h2>Daily quests</h2>
-            <span className="muted">reset at midnight · finish all 3 for a chest</span>
-          </div>
-          {quests.list.map((q) => (
-            <div key={q.id} className={`quest ${q.done ? 'done' : ''}`}>
-              <div className="quest-top">
-                <span>{q.done ? '✅' : '◻️'} {q.label}</span>
-                <span className="mono xp-tag">+{q.reward}</span>
-              </div>
-              <div className="bar">
-                <motion.div className="bar-fill" initial={{ width: 0 }} animate={{ width: `${(q.progress / q.target) * 100}%` }} transition={{ type: 'spring', stiffness: 80, damping: 15 }} />
-              </div>
-              <div className="muted mono small">{q.progress}/{q.target}</div>
+      <div className="today">
+        {importing ? (
+          <div className="stage" style={{ padding: 26 }}>
+            <p style={{ opacity: 0.7 }}>Setting up</p>
+            <h2 className="display" style={{ fontSize: 40, margin: '6px 0 14px' }}>
+              {games.length === 0 ? 'Fetching your games from chess.com' : 'Reviewing your latest game'}
+            </h2>
+            <div className="meter" style={{ background: '#ffffff1a' }}>
+              <i style={{ width: `${games.length === 0 ? 8 : q.total ? (q.done / q.total) * 100 : 5}%`, background: 'var(--gold)' }} />
             </div>
-          ))}
-        </section>
-
-        <section className="card leaks">
-          <div className="card-head">
-            <h2>Your Elo leaks</h2>
-            <span className="muted">where your points actually go</span>
+            <p style={{ opacity: 0.75, marginTop: 14 }} className="t-small">
+              {games.length === 0 ? 'This takes a few seconds.' : `${games.length} games found. Your three most recent are being reviewed now; the mistakes you made become your first training set.`}
+            </p>
           </div>
-          {leaks.length === 0 && <p className="muted">Review a few games and your personal weakness report shows up here.</p>}
-          {leaks.slice(0, 5).map((l, i) => (
-            <div key={l.motif} className="leak">
-              <div className="leak-top">
-                <span className="leak-name">{l.emoji} {l.label}</span>
-                <span className="mono muted">{(l.share * 100).toFixed(0)}%</span>
-              </div>
-              <div className="bar">
-                <motion.div className="bar-fill leak-fill" initial={{ width: 0 }} animate={{ width: `${l.share * 100}%` }} transition={{ delay: 0.2 + i * 0.08, type: 'spring', stiffness: 70, damping: 14 }} />
-              </div>
-              {i === 0 && (
-                <div className="leak-tip">
-                  💡 {l.tip}{' '}
-                  <a className="link" href="#/train/leak">Train it →</a>
-                </div>
-              )}
+        ) : focusDrill ? (
+          <a className="panel focus" href="#/train/session">
+            <div className="mini">
+              <Board fen={focusDrill.fen} orientation={focusDrill.color === 'w' ? 'white' : 'black'} coordinates={false} />
             </div>
-          ))}
-        </section>
+            <div className="stack" style={{ gap: 14 }}>
+              <span className="tag" style={{ alignSelf: 'flex-start' }}>
+                <ClassIcon cls={focusDrill.cls} size={16} /> {CLASS_LABEL[focusDrill.cls]} vs {focusDrill.opponent}
+              </span>
+              <p className="t-3">
+                You played <b>{focusDrill.playedSan}</b> here. There was something much better.
+              </p>
+              <p className="quiet t-small">
+                {due.length} positions from your games are due. A session takes about {Math.max(2, Math.round(Math.min(due.length, 10) * 0.6))} minutes.
+              </p>
+              <span className="key ink big" style={{ alignSelf: 'flex-start' }}>Start training</span>
+            </div>
+          </a>
+        ) : unreviewed ? (
+          <a className="panel focus" href={`#/review/${encodeURIComponent(unreviewed.id)}/learn`} style={{ gridTemplateColumns: '1fr' }}>
+            <div className="stack" style={{ gap: 14 }}>
+              <p className="t-3">Your game against {unreviewed.userColor === 'w' ? unreviewed.black.username : unreviewed.white.username} is analysed.</p>
+              <p className="quiet">Walk through your key moments and find the moves you missed. Each one you get wrong comes back later as a drill.</p>
+              <span className="key ink big" style={{ alignSelf: 'flex-start' }}>Review key moments</span>
+            </div>
+          </a>
+        ) : (
+          <div className="panel focus" style={{ gridTemplateColumns: '1fr' }}>
+            <div className="stack" style={{ gap: 14 }}>
+              <p className="t-3">Nothing is due right now.</p>
+              <p className="quiet">Play a game on chess.com. Hindsight picks it up within a minute of the last move and reviews it for you.</p>
+              <div className="row">
+                <a className="key ink" href="https://www.chess.com/play/online" target="_blank" rel="noreferrer">Play on chess.com</a>
+                <a className="key" href="#/train/rush">Blunder Rush</a>
+              </div>
+            </div>
+          </div>
+        )}
 
-        <RatingCard />
-        <StatsCard due={due} total={drills.length} mastered={mastered} />
+        <section className="panel panel-pad">
+          <div className="goal">
+            <div className="grow">
+              <h2 className="t-3">Today</h2>
+              <p className="quiet t-small">{xpToday >= DAILY_GOAL ? 'Daily goal reached. Streak is safe.' : `${DAILY_GOAL - xpToday} XP until your daily goal.`}</p>
+            </div>
+            <span className="display num" style={{ fontSize: 40 }}>
+              {Math.min(xpToday, 999)}<span className="faint" style={{ fontSize: 22 }}>/{DAILY_GOAL}</span>
+            </span>
+          </div>
+          <div className="meter" style={{ margin: '12px 0 10px' }}>
+            <i style={{ width: `${Math.min(100, (xpToday / DAILY_GOAL) * 100)}%`, background: 'var(--gold)' }} />
+          </div>
+          <div>
+            {quests.list.map((q) => (
+              <div key={q.id} className={`quest ${q.done ? 'done' : ''}`}>
+                <span className="box" aria-hidden="true">{q.done ? '✓' : ''}</span>
+                <span className="q-label">
+                  {q.label}
+                  {!q.done && q.target > 1 && <span className="faint num"> {q.progress}/{q.target}</span>}
+                </span>
+                <span className="reward">+{q.reward}</span>
+              </div>
+            ))}
+          </div>
+          <p className="faint t-tiny" style={{ marginTop: 8 }}>Finish all three for a chest.</p>
+        </section>
       </div>
 
-      <section className="card">
-        <div className="card-head">
-          <h2>Latest games</h2>
-          <span className="spacer" />
-          <button className="btn ghost" onClick={() => syncGames()} disabled={syncing}>
-            {syncing ? <span className="spinner" /> : '↻'} Sync
+      <section className="section">
+        <div className="section-head">
+          <h2 className="t-2">Where your points go</h2>
+          <span className="grow" />
+          {leaks[0] && <a className="key sm" href="#/train/leak">Train {leaks[0].label.toLowerCase()}</a>}
+        </div>
+        {leaks.length === 0 ? (
+          <p className="quiet measure">Once a few games are reviewed, this ranks the habits that cost you the most, from hanging pieces to time trouble.</p>
+        ) : (
+          <div className="panel panel-pad">
+            {leaks.slice(0, 5).map((l) => (
+              <div key={l.motif} className="leak-row">
+                <span style={{ fontWeight: 650 }}>{l.label}</span>
+                <span className="meter"><i style={{ width: `${Math.max(4, l.share * 100)}%` }} /></span>
+                <span className="num" style={{ textAlign: 'right', fontWeight: 700 }}>{Math.round(l.share * 100)}%</span>
+              </div>
+            ))}
+            <p className="quiet t-small" style={{ marginTop: 10 }}>{leaks[0].tip}</p>
+          </div>
+        )}
+      </section>
+
+      <section className="section">
+        <div className="section-head">
+          <h2 className="t-2">Recent games</h2>
+          <span className="faint t-small">
+            {analyses.length} reviewed, {drills.length} mistakes saved, {mastered} mastered, {stats.drillsSolved} solved
+          </span>
+          <span className="grow" />
+          <button className="key sm" onClick={() => syncGames()} disabled={syncing}>
+            {syncing ? <span className="spin" /> : null} Check chess.com
           </button>
-          <a className="btn ghost" href="#/games">All games</a>
         </div>
-        <div className="game-grid">
-          {games.slice(0, 8).map((g, i) => (
-            <GameCard key={g.id} g={g} i={i} />
+        {syncErr && <p className="err" style={{ marginBottom: 10 }}>{syncErr}</p>}
+        <div className="tape">
+          {games.slice(0, 8).map((g) => (
+            <TapeRow key={g.id} g={g} />
           ))}
-          {!games.length && <p className="muted">{syncing ? 'Fetching your games from chess.com…' : 'No games found in the last two months.'}</p>}
+          {!games.length && <p className="quiet">{syncing ? 'Fetching your games from chess.com…' : 'No games in the last two months yet.'}</p>}
         </div>
+        {games.length > 8 && (
+          <a className="key flat" href="#/games" style={{ marginTop: 10 }}>See all {games.length} games</a>
+        )}
       </section>
     </div>
-  );
-}
-
-function StatsCard({ due, total, mastered }: { due: number; total: number; mastered: number }) {
-  const a = useRef<HTMLSpanElement>(null);
-  const b = useRef<HTMLSpanElement>(null);
-  const c = useRef<HTMLSpanElement>(null);
-  const stats = useStore((s) => s.stats);
-  useEffect(() => {
-    countUp(a.current, due);
-    countUp(b.current, mastered);
-    countUp(c.current, stats.drillsSolved);
-  }, [due, mastered, stats.drillsSolved]);
-  return (
-    <section className="card stats">
-      <div className="card-head">
-        <h2>Mistake bank</h2>
-      </div>
-      <div className="stat-row">
-        <div className="stat">
-          <span ref={a} className="stat-num mono" style={{ color: '#ff9a3c' }}>0</span>
-          <span className="muted">due now</span>
-        </div>
-        <div className="stat">
-          <span ref={b} className="stat-num mono" style={{ color: '#7fc241' }}>0</span>
-          <span className="muted">mastered</span>
-        </div>
-        <div className="stat">
-          <span ref={c} className="stat-num mono" style={{ color: '#5b8def' }}>0</span>
-          <span className="muted">solved</span>
-        </div>
-      </div>
-      <div className="bar thick">
-        <motion.div className="bar-fill mastery" initial={{ width: 0 }} animate={{ width: `${total ? (mastered / total) * 100 : 0}%` }} />
-      </div>
-      <p className="muted small">A mistake is mastered once you've recalled it correctly over a 3-week interval.</p>
-      <div className="row gap">
-        <a href="#/train/session" className="btn primary">Train now</a>
-        <a href="#/train/rush" className="btn">⚡ Blunder Rush</a>
-      </div>
-    </section>
-  );
-}
-
-function RatingCard() {
-  const games = useLiveQuery(() => db.games.orderBy('endTime').toArray(), []) ?? [];
-  const byClass = new Map<string, number>();
-  for (const g of games) byClass.set(g.timeClass, (byClass.get(g.timeClass) ?? 0) + 1);
-  const tc = [...byClass.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-  const series = games.filter((g) => g.timeClass === tc && g.rated).map((g) => ({ r: selfOf(g).rating, acc: g.userAccuracy }));
-  const W = 320;
-  const H = 110;
-  if (series.length < 2)
-    return (
-      <section className="card">
-        <div className="card-head"><h2>Rating</h2></div>
-        <p className="muted">Play a few rated games to see your trend.</p>
-      </section>
-    );
-  const min = Math.min(...series.map((s) => s.r)) - 10;
-  const max = Math.max(...series.map((s) => s.r)) + 10;
-  const x = (i: number) => (i / (series.length - 1)) * W;
-  const y = (r: number) => H - ((r - min) / (max - min)) * H;
-  const path = series.map((s, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(s.r).toFixed(1)}`).join(' ');
-  const last = series[series.length - 1].r;
-  const first = series[0].r;
-  const delta = last - first;
-  return (
-    <section className="card rating">
-      <div className="card-head">
-        <h2>{tc} rating</h2>
-        <span className="spacer" />
-        <span className={`mono delta ${delta >= 0 ? 'up' : 'down'}`}>{delta >= 0 ? '▲' : '▼'} {Math.abs(delta)}</span>
-      </div>
-      <div className="rating-big mono">{last}</div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="spark">
-        <defs>
-          <linearGradient id="rg" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#5b8def" stopOpacity=".45" />
-            <stop offset="100%" stopColor="#5b8def" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d={`${path} L${W},${H} L0,${H} Z`} fill="url(#rg)" />
-        <motion.path d={path} fill="none" stroke="#5b8def" strokeWidth="2.5" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: 'easeOut' }} />
-        <circle cx={x(series.length - 1)} cy={y(last)} r="4" fill="#ffd34d" />
-      </svg>
-      <p className="muted small">Last {series.length} rated {tc} games (from your synced history).</p>
-    </section>
   );
 }

@@ -1,0 +1,15 @@
+{
+  "id": "./",
+  "name": "Hindsight",
+  "short_name": "Hindsight",
+  "description": "Chess game review that trains your mistakes.",
+  "display": "standalone",
+  "start_url": "./",
+  "scope": "./",
+  "theme_color": "#111111",
+  "background_color": "#f4f1ea",
+  "icons": [
+    { "src": "icons/hindsight.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icons/hindsight-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

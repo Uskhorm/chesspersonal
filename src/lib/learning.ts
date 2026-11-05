@@ -1,5 +1,6 @@
 import { MOTIF_INFO } from './classify';
 import type { Drill, GameAnalysis, Motif, StoredGame } from './types';
+import { isNewCard, retrievability, type FsrsDrill } from './srs';
 
 export interface Leak {
   motif: Motif;
@@ -59,28 +60,35 @@ export function computeLeaks(games: StoredGame[], analyses: GameAnalysis[]): Lea
  */
 export function buildSession(drills: Drill[], size: number, recentSuccess: number | null): Drill[] {
   const now = Date.now();
-  const due = drills.filter((d) => d.due <= now).sort((a, b) => a.due - b.due);
-  const later = drills.filter((d) => d.due > now).sort((a, b) => a.due - b.due);
-  let pool = [...due, ...later].slice(0, size * 3);
-
-  // Adaptive difficulty: hard = many lapses / blunders that cost a lot.
-  const hardness = (d: Drill) => d.lapses * 2 + (d.cls === 'blunder' ? 1 : 0) - d.reps;
-  if (recentSuccess !== null && recentSuccess > 0.9) pool.sort((a, b) => hardness(b) - hardness(a));
-  else if (recentSuccess !== null && recentSuccess < 0.75) pool.sort((a, b) => hardness(a) - hardness(b));
-  pool = pool.slice(0, size * 2);
-
-  // Interleave by primary motif.
-  const buckets = new Map<string, Drill[]>();
-  for (const d of pool) {
-    const k = d.motifs?.[0] ?? 'positional';
-    buckets.set(k, [...(buckets.get(k) ?? []), d]);
-  }
+  const start = new Date(now); start.setHours(0, 0, 0, 0);
+  const unique = [...new Map(drills.map((d) => [d.id, d])).values()];
+  const introduced = unique.filter((d) => ((d as FsrsDrill).introducedAt ?? 0) >= +start).length;
+  let newBudget = Math.max(0, 15 - introduced);
+  const due = unique.filter((d) => !isNewCard(d) && d.due <= now)
+    .sort((a, b) => retrievability(a, now) - retrievability(b, now) || a.due - b.due);
+  const fresh = unique.filter(isNewCard).filter((d) => d.due <= now).sort((a, b) => a.createdAt - b.createdAt);
+  const later = unique.filter((d) => !isNewCard(d) && d.due > now);
   const out: Drill[] = [];
-  while (out.length < size && [...buckets.values()].some((b) => b.length)) {
-    for (const b of buckets.values()) {
-      const d = b.shift();
-      if (d && out.length < size) out.push(d);
-    }
+  let predicted = 0;
+  // New-card recall is unknown: use a prior, never pretend it is measured by FSRS.
+  const probability = (d: Drill) => isNewCard(d) ? 0.85 : retrievability(d, now);
+  const target = Math.min(0.95, Math.max(0.75, 0.85 + (0.85 - (recentSuccess ?? 0.85)) * 0.25));
+  while (out.length < Math.max(0, Math.floor(size))) {
+    const pool = due.length ? due : newBudget && fresh.length ? fresh : later;
+    if (!pool.length) break;
+    const lastMotif = out.at(-1)?.motifs?.[0];
+    // Preserve urgent-first ordering; an adjacent motif may move ahead of a
+    // repeated motif. Future practice can freely target 85% recall. Mandatory
+    // overdue reviews take precedence when an 85% mean is unattainable.
+    const candidates = pool === due ? pool.slice(0, 4) : pool;
+    const score = (d: Drill) => Math.abs((predicted + probability(d)) / (out.length + 1) - target)
+      + (lastMotif && d.motifs?.[0] === lastMotif ? 0.15 : 0);
+    const pick = pool === due
+      ? candidates.find((d) => !lastMotif || d.motifs?.[0] !== lastMotif) ?? candidates[0]
+      : [...candidates].sort((a, b) => score(a) - score(b))[0];
+    pool.splice(pool.indexOf(pick), 1);
+    if (isNewCard(pick)) newBudget--;
+    out.push(pick); predicted += probability(pick);
   }
   return out;
 }
