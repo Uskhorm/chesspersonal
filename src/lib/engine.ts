@@ -1,7 +1,7 @@
 import { Chess } from 'chess.js';
 import type { PositionEval, PVLine, Score } from './types';
 
-const ENGINE_URL = '/engine/stockfish-19-lite-single.js';
+const ENGINE_URL = `${import.meta.env.BASE_URL}engine/stockfish-19-lite-single.js`;
 
 interface Job {
   fen: string;

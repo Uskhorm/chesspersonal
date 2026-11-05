@@ -114,7 +114,7 @@ async function analyseAndStore(game: StoredGame): Promise<GameAnalysis> {
     onClick: () => (location.hash = `#/review/${encodeURIComponent(game.id)}`),
   });
   if (st.settings.notify && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-    new Notification('Game reviewed ♟️', { body: `vs ${opp}: ${bits.join(' · ')}`, icon: '/icon.svg' });
+    new Notification('Game reviewed ♟️', { body: `vs ${opp}: ${bits.join(' · ')}`, icon: `${import.meta.env.BASE_URL}icon.svg` });
   }
   return a;
 }
