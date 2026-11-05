@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { Download, KeyRound, LogOut, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { ACHIEVEMENTS, levelFromXp, titleFor, useStore, type Depth } from '../lib/store';
 import { db } from '../lib/db';
 import { engine } from '../lib/engine';
@@ -7,8 +8,10 @@ import { addPasskey, listPasskeys, removePasskey, signOut, useAuth, type Passkey
 import { cloudEnabled } from '../lib/api';
 import { syncNow, useCloudSync } from '../lib/cloudsync';
 import { useInstallPrompt } from '../lib/pwa';
+import { useTheme, type Theme } from '../lib/theme';
 import { THEMES } from '../components/themes';
 import { Medal } from '../components/Medal';
+import { Seg } from '../components/Seg';
 import { emit } from '../lib/bus';
 
 function ago(t: number | null | undefined) {
@@ -19,21 +22,28 @@ function ago(t: number | null | undefined) {
   return `${Math.floor(s / 3600)} h ago`;
 }
 
+const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
 export function Profile() {
   const st = useStore();
   const user = useAuth((s) => s.user);
   const sync = useCloudSync();
   const install = useInstallPrompt();
+  const { theme, setTheme } = useTheme();
   const [keys, setKeys] = useState<Passkey[] | null>(null);
   const level = levelFromXp(st.xp);
   const activity = useLiveQuery(() => db.activity.toArray(), []) ?? [];
   const byDay = new Map(activity.map((a) => [a.day, a.xp]));
+  // 18 weeks, aligned so each column is a week starting Sunday.
   const days: { day: string; xp: number }[] = [];
-  for (let i = 111; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86_400_000);
-    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(end.getDate() - 7 * 17 - end.getDay());
+  for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const k = dayKey(d);
     days.push({ day: k, xp: byDay.get(k) ?? 0 });
   }
+  const level4 = (xp: number) => (xp <= 0 ? 0 : xp < 20 ? 1 : xp < 60 ? 2 : xp < 120 ? 3 : 4);
 
   useEffect(() => {
     if (user) listPasskeys().then(setKeys).catch(() => setKeys([]));
@@ -43,93 +53,218 @@ export function Profile() {
 
   return (
     <div className="page">
-      <header className="row" style={{ gap: 20, marginBottom: 8 }}>
-        <span className="avatar" style={{ width: 84, height: 84, borderRadius: 22, fontSize: 34 }}>
-          {st.avatar ? <img src={st.avatar} alt="" /> : (st.username?.[0] ?? '?').toUpperCase()}
-        </span>
+      <header className="profile-head">
+        <span className="avatar">{st.avatar ? <img src={st.avatar} alt="" /> : (st.username?.[0] ?? '?').toUpperCase()}</span>
         <div>
           <h1 className="display t-1">{st.displayName || st.username}</h1>
-          <p className="quiet">
-            Level {level}, {titleFor(level)}. {st.xp} XP, best streak {st.streak.best} days, training rating {st.trainingRating}.
+          <p className="quiet" style={{ marginTop: 6 }}>
+            Level {level}, {titleFor(level)}. <span className="num">{st.xp}</span> XP, best streak <span className="num">{st.streak.best}</span> days, training rating <span className="num">{st.trainingRating}</span>.
           </p>
         </div>
       </header>
 
-      <section className="section today">
-        <div className="panel panel-pad">
-          <h2 className="t-3">Account</h2>
+      <div className="cols-even">
+        <section className="card card-pad" aria-labelledby="acct-h">
+          <h2 id="acct-h" className="t-3">Account</h2>
           {user ? (
             <>
-              <p className="quiet t-small" style={{ margin: '4px 0 12px' }}>
-                Signed in as {user.username}. Progress is saved to your account and follows you to any browser.
+              <p className="faint t-small" style={{ margin: '4px 0 8px' }}>
+                Signed in as {user.username}. Progress follows you to any browser you sign in on.
               </p>
               <div className="set-row">
-                <span>
-                  Sync {sync.status === 'error' ? <b className="err">failed</b> : sync.status === 'offline' ? 'paused while offline' : `last ran ${ago(lastSynced)}`}
-                  {sync.pending > 0 && <span className="faint">, {sync.pending} changes waiting</span>}
+                <span className="lbl">
+                  Sync
+                  <small>
+                    {sync.status === 'error' ? 'Last sync failed' : sync.status === 'offline' ? 'Paused while offline' : `Last ran ${ago(lastSynced)}`}
+                    {sync.pending > 0 ? `, ${sync.pending} changes waiting` : ''}
+                  </small>
                 </span>
-                <button className="key sm" onClick={() => syncNow().catch(() => {})}>Sync now</button>
+                <button className="btn sm" onClick={() => syncNow().catch(() => {})}>
+                  <RefreshCw /> Sync now
+                </button>
               </div>
               <div className="set-row" style={{ alignItems: 'flex-start' }}>
-                <div className="stack" style={{ gap: 6 }}>
-                  <span>Passkeys</span>
+                <span className="lbl">
+                  Passkeys
                   {(keys ?? []).map((k) => (
-                    <span key={k.id} className="row t-small quiet" style={{ gap: 8 }}>
-                      {k.device_name || 'Passkey'}, added {new Date(k.created_at).toLocaleDateString()}
+                    <small key={k.id} className="row" style={{ gap: 8 }}>
+                      <KeyRound size={13} /> {k.device_name || 'Passkey'}, added {new Date(k.created_at).toLocaleDateString()}
                       {keys && keys.length > 1 && (
-                        <button className="key flat sm danger" onClick={() => removePasskey(k.id).then(() => listPasskeys().then(setKeys))}>Remove</button>
+                        <button className="btn ghost sm danger" onClick={() => removePasskey(k.id).then(() => listPasskeys().then(setKeys))} aria-label={`Remove passkey ${k.device_name || ''}`}>
+                          Remove
+                        </button>
                       )}
-                    </span>
+                    </small>
                   ))}
-                </div>
+                </span>
                 <button
-                  className="key sm"
+                  className="btn sm"
                   onClick={() =>
                     addPasskey(navigator.platform || 'This device')
                       .then(() => listPasskeys().then(setKeys))
-                      .then(() => emit({ type: 'toast', text: 'Passkey added.', emoji: '✓', tone: 'good' }))
-                      .catch((e) => emit({ type: 'toast', text: (e as Error).message, emoji: '!', tone: 'bad' }))
+                      .then(() => emit({ type: 'toast', text: 'Passkey added.', tone: 'good' }))
+                      .catch((e) => emit({ type: 'toast', text: (e as Error).message, tone: 'bad' }))
                   }
                 >
-                  Add a passkey
+                  <Plus /> Add a passkey
                 </button>
               </div>
               <div className="set-row">
-                <span className="quiet">Signing out keeps this device's copy until you clear it.</span>
-                <button className="key sm" onClick={() => signOut()}>Sign out</button>
+                <span className="lbl">
+                  Sign out
+                  <small>This device keeps its copy until you clear it.</small>
+                </span>
+                <button className="btn sm" onClick={() => signOut()}>
+                  <LogOut /> Sign out
+                </button>
               </div>
             </>
           ) : (
             <>
-              <p className="quiet" style={{ margin: '4px 0 12px' }}>
+              <p className="quiet" style={{ margin: '6px 0 14px' }}>
                 {cloudEnabled ? 'You are using Hindsight without an account, so progress lives only in this browser.' : 'Cloud sync is not configured for this build.'}
               </p>
               {cloudEnabled && (
-                <button className="key ink" onClick={() => st.disconnect()}>Create an account to sync</button>
+                <button className="btn primary" onClick={() => st.disconnect()}>
+                  <KeyRound /> Create an account to sync
+                </button>
               )}
             </>
           )}
-        </div>
+        </section>
 
-        <div className="panel panel-pad">
-          <h2 className="t-3">Activity</h2>
-          <p className="quiet t-small" style={{ margin: '4px 0 14px' }}>Each square is a day. Darker means more XP.</p>
-          <div className="heat" role="img" aria-label="Activity over the last 16 weeks">
+        <section className="card card-pad" aria-labelledby="act-h">
+          <h2 id="act-h" className="t-3">Activity</h2>
+          <p className="faint t-small" style={{ margin: '4px 0 14px' }}>Each square is a day. Greener means more XP.</p>
+          <div className="heat" role="img" aria-label={`Activity over the last 18 weeks: ${days.filter((d) => d.xp > 0).length} active days`}>
             {days.map((d) => (
-              <i key={d.day} title={`${d.day}: ${d.xp} XP`} style={{ opacity: d.xp ? 0.25 + Math.min(1, d.xp / 150) * 0.75 : 0.08 }} />
+              <i key={d.day} title={`${d.day}: ${d.xp} XP`} data-l={level4(d.xp)} />
             ))}
           </div>
           {install.canInstall && !install.isStandalone && (
-            <div className="set-row" style={{ marginTop: 16 }}>
-              <span>Install Hindsight as an app for one-tap training.</span>
-              <button className="key sm ink" onClick={() => install.promptInstall()}>Install</button>
+            <div className="set-row" style={{ marginTop: 12 }}>
+              <span className="lbl">
+                Install Hindsight
+                <small>One tap to train, works offline.</small>
+              </span>
+              <button className="btn sm primary" onClick={() => install.promptInstall()}>
+                <Download /> Install
+              </button>
             </div>
           )}
+        </section>
+      </div>
+
+      <section className="section" aria-labelledby="look-h">
+        <div className="section-head">
+          <h2 id="look-h" className="t-2">Appearance</h2>
+        </div>
+        <div className="card card-pad stack" style={{ gap: 20 }}>
+          <div className="stack" style={{ gap: 10 }}>
+            <span className="strong">Theme</span>
+            <div className="theme-pick" role="group" aria-label="Theme">
+              {(
+                [
+                  ['system', 'Match device'],
+                  ['light', 'Light'],
+                  ['dark', 'Dark'],
+                ] as [Theme, string][]
+              ).map(([k, label]) => (
+                <button key={k} aria-pressed={theme === k} onClick={() => setTheme(k)}>
+                  <span className="prev" aria-hidden="true">
+                    {k === 'system' ? (
+                      <>
+                        <span className="l" />
+                        <span className="d" />
+                      </>
+                    ) : (
+                      <span className={k === 'light' ? 'l' : 'd'} style={{ gridColumn: 'span 2' }} />
+                    )}
+                  </span>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="stack" style={{ gap: 10 }}>
+            <span className="strong">
+              Board <span className="faint t-small" style={{ fontWeight: 500 }}>Epic and Legendary chests unlock more</span>
+            </span>
+            <div className="themes">
+              {THEMES.map((t) => {
+                const unlocked = t.free || st.unlockedThemes.includes(t.id);
+                return (
+                  <button key={t.id} disabled={!unlocked} className="theme" onClick={() => st.setSetting('boardTheme', t.id)} aria-pressed={st.settings.boardTheme === t.id} aria-label={unlocked ? `${t.label} board` : `${t.label} board, locked`}>
+                    <span className="sw" style={{ backgroundImage: `conic-gradient(${t.dark} 90deg, ${t.light} 90deg 180deg, ${t.dark} 180deg 270deg, ${t.light} 270deg)` }} />
+                    {unlocked ? t.label : `${t.label}, locked`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="section">
-        <div className="section-head"><h2 className="t-2">Achievements</h2><span className="faint t-small">{st.achievements.length} of {ACHIEVEMENTS.length}, each one drops a chest</span></div>
+      <section className="section" aria-labelledby="set-h">
+        <div className="section-head">
+          <h2 id="set-h" className="t-2">Settings</h2>
+        </div>
+        <div className="card card-pad">
+          <div className="set-row">
+            <span className="lbl">
+              Analysis depth
+              <small>{engine.size} engine threads on this device</small>
+            </span>
+            <Seg
+              label="Analysis depth"
+              value={String(st.settings.depth) as '12' | '16' | '20'}
+              options={[
+                ['12', 'Fast'],
+                ['16', 'Standard'],
+                ['20', 'Deep'],
+              ]}
+              onChange={(v) => st.setSetting('depth', Number(v) as Depth)}
+            />
+          </div>
+          <Toggle label="Review new games automatically" sub="Your last 10 games are reviewed as soon as they sync." v={st.settings.autoAnalyse} on={(v) => st.setSetting('autoAnalyse', v)} />
+          <Toggle label="Sounds" sub="Piece moves, captures and answer chimes." v={st.settings.sound} on={(v) => st.setSetting('sound', v)} />
+          <Toggle
+            label="Notify me when a game is reviewed"
+            v={st.settings.notify}
+            on={(v) => {
+              st.setSetting('notify', v);
+              if (v && 'Notification' in window) Notification.requestPermission();
+            }}
+          />
+          <div className="set-row">
+            <span className="lbl">
+              Clear this device
+              <small>Removes games, reviews and drills stored here. Your account copy is kept.</small>
+            </span>
+            <button
+              className="btn sm danger"
+              onClick={async () => {
+                if (!confirm('Clear all local data on this device?')) return;
+                signOut();
+                await db.delete();
+                localStorage.clear();
+                location.hash = '';
+                location.reload();
+              }}
+            >
+              <Trash2 /> Clear device
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="section" aria-labelledby="ach-h">
+        <div className="section-head">
+          <h2 id="ach-h" className="t-2">Achievements</h2>
+          <span className="faint t-small num">
+            {st.achievements.length} of {ACHIEVEMENTS.length}, each one drops a chest
+          </span>
+        </div>
         <div className="badges">
           {ACHIEVEMENTS.map((a) => {
             const got = st.achievements.includes(a.id);
@@ -137,8 +272,8 @@ export function Profile() {
               <div key={a.id} className={`badge-tile ${got ? 'got' : ''}`}>
                 <Medal id={a.id} got={got} />
                 <span>
-                  <span style={{ display: 'block', fontWeight: 700, color: got ? 'var(--ink)' : 'var(--ink-3)' }}>{a.label}</span>
-                  <span className="t-small quiet">{a.desc}</span>
+                  <span className="t">{a.label}</span>
+                  <span className="t-small faint">{a.desc}</span>
                 </span>
               </div>
             );
@@ -146,74 +281,24 @@ export function Profile() {
         </div>
       </section>
 
-      <section className="section">
-        <div className="section-head"><h2 className="t-2">Board</h2><span className="faint t-small">Epic and Legendary chests unlock more</span></div>
-        <div className="themes">
-          {THEMES.map((t) => {
-            const unlocked = t.free || st.unlockedThemes.includes(t.id);
-            return (
-              <button key={t.id} disabled={!unlocked} className={`theme ${st.settings.boardTheme === t.id ? 'on' : ''}`} onClick={() => st.setSetting('boardTheme', t.id)} aria-pressed={st.settings.boardTheme === t.id}>
-                <span className="sw" style={{ backgroundImage: `conic-gradient(${t.dark} 90deg, ${t.light} 90deg 180deg, ${t.dark} 180deg 270deg, ${t.light} 270deg)` }} />
-                {unlocked ? t.label : `${t.label}, locked`}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="section panel panel-pad">
-        <h2 className="t-3">Settings</h2>
-        <label className="set-row">
-          <span>
-            Analysis depth <span className="faint t-small">, {engine.size} engine threads on this device</span>
-          </span>
-          <select className="input" value={st.settings.depth} onChange={(e) => st.setSetting('depth', Number(e.target.value) as Depth)}>
-            <option value={12}>Fast</option>
-            <option value={16}>Standard</option>
-            <option value={20}>Deep</option>
-          </select>
-        </label>
-        <Toggle label="Review new games automatically" v={st.settings.autoAnalyse} on={(v) => st.setSetting('autoAnalyse', v)} />
-        <Toggle label="Sounds" v={st.settings.sound} on={(v) => st.setSetting('sound', v)} />
-        <Toggle
-          label="Notify me when a game is reviewed"
-          v={st.settings.notify}
-          on={(v) => {
-            st.setSetting('notify', v);
-            if (v && 'Notification' in window) Notification.requestPermission();
-          }}
-        />
-        <div className="set-row">
-          <span className="quiet">Clear this device's games, reviews and drills. Your account copy is kept.</span>
-          <button
-            className="key sm danger"
-            onClick={async () => {
-              if (!confirm('Clear all local data on this device?')) return;
-              signOut();
-              await db.delete();
-              localStorage.clear();
-              location.hash = '';
-              location.reload();
-            }}
-          >
-            Clear device
-          </button>
-        </div>
-      </section>
-
-      <p className="faint t-small measure" style={{ marginTop: 28 }}>
+      <p className="faint t-small measure" style={{ marginTop: 40 }}>
         Hindsight is open source under GPL-3.0 and is not affiliated with chess.com or Lichess. Built on Stockfish, chess.js, chessground, the Lichess opening book, puzzle and cloud APIs, and the chess.com public API.{' '}
-        <a className="link" href="https://github.com/Uskhorm/hindsight" target="_blank" rel="noreferrer">Source code</a>
+        <a className="link" href="https://github.com/Uskhorm/hindsight" target="_blank" rel="noreferrer">
+          Source code
+        </a>
       </p>
     </div>
   );
 }
 
-function Toggle({ label, v, on }: { label: string; v: boolean; on: (v: boolean) => void }) {
+function Toggle({ label, sub, v, on }: { label: string; sub?: string; v: boolean; on: (v: boolean) => void }) {
   return (
     <div className="set-row">
-      <span>{label}</span>
-      <button className={`toggle ${v ? 'on' : ''}`} onClick={() => on(!v)} role="switch" aria-checked={v} aria-label={label}>
+      <span className="lbl">
+        {label}
+        {sub && <small>{sub}</small>}
+      </span>
+      <button className="switch" onClick={() => on(!v)} role="switch" aria-checked={v} aria-label={label}>
         <span className="knob" />
       </button>
     </div>

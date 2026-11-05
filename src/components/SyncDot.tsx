@@ -18,6 +18,6 @@ export function SyncDot() {
     return () => unsub?.();
   }, []);
   if (status === 'off') return null;
-  const label = { idle: 'Synced', syncing: 'Syncing…', error: 'Sync error', offline: 'Offline' }[status];
-  return <span className={`sb-sync ${status}`} title={label} aria-label={label} />;
+  const label = { idle: 'Synced', syncing: 'Syncing', error: 'Sync failed', offline: 'Offline' }[status];
+  return <span className={`sync-dot ${status}`} title={label} role="status" aria-label={label} />;
 }

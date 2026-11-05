@@ -1,23 +1,36 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
+import { MotionConfig, motion } from 'motion/react';
 import { Topbar } from './components/Topbar';
 import { FxHost } from './components/FxHost';
+import { PageSkeleton } from './components/Skeleton';
+import { ease, spring } from './components/motion';
 import { useStore } from './lib/store';
-import { startAutoSync } from './lib/sync';
+import { pauseAnalysis, startAutoSync } from './lib/sync';
 import { sfx } from './lib/sound';
 import { useAuth } from './lib/auth';
 import { scheduleStreakReminder } from './lib/pwa';
 import { setQuiet } from './lib/bus';
 import { db } from './lib/db';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { isMastered } from './lib/srs';
+import { useDrillStats } from './lib/queries';
+import { useHotkeys } from './lib/hotkeys';
 import { Gate } from './pages/Gate';
 import { Home } from './pages/Home';
-import { Games } from './pages/Games';
-import { Review } from './pages/Review';
-import { Train } from './pages/Train';
-import { Profile } from './pages/Profile';
 
+// Heavy routes load on demand; Home and the gate are in the main bundle.
+const Games = lazy(() => import('./pages/Games').then((m) => ({ default: m.Games })));
+const Review = lazy(() => import('./pages/Review').then((m) => ({ default: m.Review })));
+const Train = lazy(() => import('./pages/Train').then((m) => ({ default: m.Train })));
 const Insights = lazy(() => import('./pages/Insights').then((m) => ({ default: m.Insights })));
+const Profile = lazy(() => import('./pages/Profile').then((m) => ({ default: m.Profile })));
+
+// Warm the chunks once the shell is idle so navigation feels instant.
+const prefetch = () => {
+  void import('./pages/Games');
+  void import('./pages/Review');
+  void import('./pages/Train');
+  void import('./pages/Insights');
+  void import('./pages/Profile');
+};
 
 function useHash() {
   const [hash, setHash] = useState(location.hash);
@@ -35,17 +48,38 @@ export function App() {
   const route = useHash();
   const token = useAuth((s) => s.token);
   const routeKey = route.join('/');
-  const inSession = (route[0] === 'review' && route[2] === 'learn') || (route[0] === 'train' && ['session', 'leak', 'rush'].includes(route[1]));
+  const [page, arg] = route;
+  const learning = page === 'review' && route[2] === 'learn';
+  const training = page === 'train' && ['session', 'leak', 'rush'].includes(arg);
+  const inSession = learning || training;
+
   useEffect(() => {
     setQuiet(inSession);
-  }, [inSession]);
+    // The batch reviewer yields the CPU to the engine that checks your answers.
+    pauseAnalysis(training);
+  }, [inSession, training]);
+
+  useHotkeys(
+    {
+      Escape: () => {
+        if (!inSession) return;
+        if (training) location.hash = '#/train';
+        else location.hash = `#/review/${encodeURIComponent(arg)}`;
+      },
+    },
+    [inSession, training, arg],
+  );
 
   useEffect(() => {
     ensureDay();
   }, [ensureDay]);
   useEffect(() => {
     if (!username) return;
-    return startAutoSync();
+    const stop = startAutoSync();
+    const idle = (window as unknown as { requestIdleCallback?: (f: () => void) => number }).requestIdleCallback;
+    if (idle) idle(prefetch);
+    else setTimeout(prefetch, 1500);
+    return stop;
   }, [username]);
   useEffect(() => {
     window.scrollTo({ top: 0 });
@@ -67,10 +101,10 @@ export function App() {
     };
   }, [username]);
   // Mastery milestones feed chests (every 5th mistake retired for good).
-  const masteredCount = useLiveQuery(async () => (await db.drills.toArray()).filter(isMastered).length, []);
+  const { mastered, total } = useDrillStats();
   useEffect(() => {
-    if (masteredCount !== undefined) useStore.getState().recordMastered(masteredCount);
-  }, [masteredCount]);
+    if (total) useStore.getState().recordMastered(mastered);
+  }, [mastered, total]);
   // Signed-in sessions resume cloud sync on every load.
   useEffect(() => {
     if (!token) return;
@@ -82,10 +116,10 @@ export function App() {
     return () => stop?.();
   }, [token]);
 
-  // A soft key-click on every press: the interface should feel like hardware.
+  // A soft key-click on primary presses: the interface should feel like hardware.
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      const t = (e.target as HTMLElement).closest('.key, .chip, .mv, .line-chip');
+      const t = (e.target as HTMLElement).closest('.btn, .seg button, .moment-step');
       if (t && !(t as HTMLButtonElement).disabled) sfx.click();
     };
     addEventListener('pointerdown', onDown);
@@ -94,31 +128,29 @@ export function App() {
 
   if (!username) {
     return (
-      <>
+      <MotionConfig reducedMotion="user" transition={spring.smooth}>
         <Gate />
         <FxHost />
-      </>
+      </MotionConfig>
     );
   }
 
-  const [page, arg] = route;
   let view: React.ReactNode;
+  let boardPage = false;
   switch (page) {
     case 'review':
-      view = <Review id={arg} learn={route[2] === 'learn'} />;
+      boardPage = true;
+      view = <Review id={arg} learn={learning} />;
       break;
     case 'train':
+      boardPage = training;
       view = <Train mode={arg} />;
       break;
     case 'games':
       view = <Games />;
       break;
     case 'insights':
-      view = (
-        <Suspense fallback={<div className="page"><span className="spin lg" /></div>}>
-          <Insights />
-        </Suspense>
-      );
+      view = <Insights />;
       break;
     case 'profile':
       view = <Profile />;
@@ -128,12 +160,23 @@ export function App() {
   }
 
   return (
-    <div className="shell">
-      <Topbar page={page === 'review' ? 'games' : page ?? ''} focus={(page === 'review' && route[2] === 'learn') || (page === 'train' && ['session', 'leak', 'rush'].includes(arg))} />
-      <main key={routeKey} className="route">
-        {view}
-      </main>
-      <FxHost />
-    </div>
+    <MotionConfig reducedMotion="user" transition={spring.smooth}>
+      <div className="shell">
+        <a href="#main" className="sr-only">Skip to content</a>
+        <Topbar page={page === 'review' ? 'games' : page ?? ''} focus={inSession} />
+        {/* Enter-only transition: the old route unmounts at once, so navigation can never get stuck. */}
+        <motion.main
+          id="main"
+          key={routeKey.split('/').slice(0, page === 'review' ? 3 : 2).join('/')}
+          className="route"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.18, ease: ease.out }}
+        >
+          <Suspense fallback={<PageSkeleton board={boardPage} />}>{view}</Suspense>
+        </motion.main>
+        <FxHost />
+      </div>
+    </MotionConfig>
   );
 }

@@ -1,69 +1,83 @@
 import { useEffect, useMemo, useState } from 'react';
+import { motion } from 'motion/react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { ArrowRight, Minus, TrendingDown, TrendingUp } from 'lucide-react';
 import { db } from '../lib/db';
 import {
   accuracyTrend,
   biggestSwings,
-  clockUsage,
-  comebackRate,
-  conversionRate,
-  errorRates,
-  focusRecommendation,
-  progressScore,
+  blundersByPiece,
+  insightCards,
+  performanceByTimeControl,
   ratingTrend,
   weeklySummary,
+  type InsightCard,
 } from '../lib/insights';
 import { buildRepertoireAsync, openingDrills, openingLeaks, repertoireSummary, type Repertoire } from '../lib/repertoire';
 import { emit } from '../lib/bus';
+import { LineChart, WdlBar } from '../components/Chart';
+import { Seg } from '../components/Seg';
+import { PageSkeleton, Skeleton } from '../components/Skeleton';
+import { enter, spring, staggerDelay } from '../components/motion';
+import { cap, plainMove } from '../components/plain';
 
 const fmt = (n: number | null | undefined, d = 0) => (n === null || n === undefined || !Number.isFinite(n) ? '–' : n.toFixed(d));
-const signed = (n: number | null | undefined, d = 0) => (n === null || n === undefined ? '' : `${n > 0 ? '+' : ''}${n.toFixed(d)}`);
+const signed = (n: number | null | undefined, d = 0) => (n === null || n === undefined || !Number.isFinite(n) ? '' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(d)}`);
+const SEV = {
+  win: { color: 'var(--good-fill)', word: 'Going well' },
+  warn: { color: 'var(--bad-fill)', word: 'Costing you' },
+  info: { color: 'var(--accent)', word: 'Worth knowing' },
+} as const;
 
 export function Insights() {
-  const games = useLiveQuery(() => db.games.toArray(), []) ?? [];
-  const analyses = useLiveQuery(() => db.analyses.toArray(), []) ?? [];
-  const drills = useLiveQuery(() => db.drills.toArray(), []) ?? [];
+  const games = useLiveQuery(() => db.games.toArray(), []);
+  const analyses = useLiveQuery(() => db.analyses.toArray(), []);
+  const drills = useLiveQuery(() => db.drills.toArray(), []);
   const [rep, setRep] = useState<Repertoire | null>(null);
   const [tc, setTc] = useState<string | null>(null);
-  const now = Date.now();
 
   useEffect(() => {
-    if (!games.length) return;
+    if (!games?.length || !analyses) return;
     buildRepertoireAsync(games, analyses).then(setRep).catch(() => setRep(null));
-  }, [games.length, analyses.length]);
+  }, [games?.length, analyses?.length]);
 
   const data = useMemo(() => {
-    if (!games.length) return null;
+    if (!games?.length || !analyses || !drills) return null;
+    const now = Date.now();
     return {
+      cards: insightCards(games, analyses, drills, now),
       ratings: ratingTrend(games, now),
       acc: accuracyTrend(games, analyses),
       week: weeklySummary(games, analyses, now),
-      clock: clockUsage(games, analyses),
-      conv: conversionRate(games, analyses),
-      comeback: comebackRate(games, analyses),
-      errors: errorRates(games, analyses),
-      focus: focusRecommendation(games, analyses, drills),
-      score: progressScore(games, analyses, drills, now),
-      swings: biggestSwings(games, analyses, 6),
+      tcs: performanceByTimeControl(games, analyses).filter((x) => x.games >= 3).sort((a, b) => b.games - a.games).slice(0, 5),
+      pieces: blundersByPiece(games, analyses).filter((p) => p.blunders > 0),
+      swings: biggestSwings(games, analyses, 5),
     };
   }, [games, analyses, drills]);
 
-  const leaks = useMemo(() => (rep ? openingLeaks(rep).slice(0, 6) : []), [rep]);
+  const leaks = useMemo(() => (rep ? openingLeaks(rep).slice(0, 5) : []), [rep]);
   const summary = useMemo(() => (rep ? repertoireSummary(rep) : null), [rep]);
+  const gameById = useMemo(() => new Map((games ?? []).map((g) => [g.id, g])), [games]);
+  const analysisById = useMemo(() => new Map((analyses ?? []).map((a) => [a.gameId, a])), [analyses]);
 
+  if (!games || !analyses || !drills) return <PageSkeleton />;
   if (!data) {
     return (
       <div className="page narrow">
         <h1 className="display t-1">Insights</h1>
-        <p className="quiet" style={{ marginTop: 10 }}>Your trends appear here once your games have synced from chess.com.</p>
+        <div className="empty" style={{ marginTop: 20 }}>
+          <h2>Nothing to analyse yet</h2>
+          <p className="quiet">Your trends appear here once your games have synced from chess.com and a few have been reviewed.</p>
+          <a className="btn primary" href="#/games">Go to your games</a>
+        </div>
       </div>
     );
   }
 
   const series = data.ratings.filter((r) => r.points.length >= 2).sort((a, b) => b.points.length - a.points.length);
   const active = series.find((s) => s.timeClass === tc) ?? series[0];
-  const focusHref = data.focus.kind === 'review' ? '#/games' : data.focus.kind === 'opening' ? '#/insights' : '#/train/leak';
   const w = data.week;
+  const [lead, ...rest] = data.cards;
 
   const addOpeningDrills = async () => {
     if (!rep) return;
@@ -71,123 +85,188 @@ export function Insights() {
     const existing = new Set(await db.drills.where('id').anyOf(ds.map((d) => d.id)).primaryKeys());
     const fresh = ds.filter((d) => !existing.has(d.id));
     await db.drills.bulkPut(fresh);
-    emit({ type: 'toast', text: fresh.length ? `Added ${fresh.length} opening positions to your training.` : 'Your opening positions are already in training.', emoji: '✓', tone: 'good' });
+    emit({ type: 'toast', text: fresh.length ? `Added ${fresh.length} opening positions to your training.` : 'Your opening positions are already in training.', tone: 'good' });
   };
 
   return (
     <div className="page">
-      <header className="today" style={{ marginBottom: 8 }}>
+      <header className="page-head">
         <div>
           <h1 className="display t-1">Insights</h1>
-          <p className="quiet measure" style={{ marginTop: 8 }}>
-            Built from {games.length} games and {analyses.length} reviews. The point is one thing to fix next, not a wall of stats.
+          <p className="faint t-small num" style={{ marginTop: 6 }}>
+            From {games.length} games and {analyses.length} reviews
           </p>
-        </div>
-        <div className="panel panel-pad">
-          <div className="goal">
-            <div className="grow">
-              <h2 className="t-3">Improvement score</h2>
-              <p className="quiet t-small">Accuracy gains, fewer errors and drill success, combined.</p>
-            </div>
-            <span className="display num" style={{ fontSize: 56 }}>{Math.round(data.score)}</span>
-          </div>
-          <div className="meter" style={{ marginTop: 10 }}><i style={{ width: `${data.score}%`, background: 'var(--gold)' }} /></div>
         </div>
       </header>
 
-      <section className="section">
-        <div className="stage" style={{ padding: 26 }}>
-          <p style={{ opacity: 0.7 }}>Your next focus</p>
-          <h2 className="display" style={{ fontSize: 'clamp(30px, 3.2vw, 44px)', margin: '6px 0 10px', maxWidth: '22ch' }}>{data.focus.title}</h2>
-          <p className="measure" style={{ opacity: 0.85, fontSize: 17 }}>{data.focus.reason}</p>
-          <div className="on-stage" style={{ marginTop: 18 }}>
-            <a className="key go big" href={focusHref}>Start on it</a>
-          </div>
-        </div>
-      </section>
+      {lead && <LeadCard c={lead} />}
 
-      <section className="section">
-        <div className="section-head"><h2 className="t-2">This week</h2><span className="faint t-small">compared with the same days last week</span></div>
-        <div className="panel versus" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-          {[
-            { label: 'games', v: fmt(w.thisWeek.games), d: signed(w.delta.games) },
-            { label: 'score', v: `${fmt(w.thisWeek.scorePercent)}%`, d: signed(w.delta.scorePercent) },
-            { label: 'accuracy', v: fmt(w.thisWeek.accuracy, 1), d: signed(w.delta.accuracy, 1) },
-            { label: 'errors per 100 moves', v: fmt(w.thisWeek.errorsPer100, 1), d: signed(w.delta.errorsPer100, 1), invert: true },
-          ].map((x, i) => (
-            <div key={x.label} style={i ? { borderLeft: '1px solid var(--rule)' } : undefined}>
-              <div className="display num" style={{ fontSize: 48 }}>{x.v}</div>
-              <p className="quiet t-small">{x.label} {x.d && <b className="num" style={{ color: (x.d.startsWith('+') ? !x.invert : !!x.invert) ? 'var(--c-best)' : 'var(--c-blunder)' }}>{x.d}</b>}</p>
-            </div>
+      {rest.length > 0 && (
+        <div className="insights-grid" style={{ marginTop: 16 }}>
+          {rest.map((c, i) => (
+            <Card key={c.id} c={c} i={i} span={spanFor(i, rest.length)} total={rest.length} />
           ))}
+        </div>
+      )}
+
+      <section className="section" aria-labelledby="week-h">
+        <div className="section-head">
+          <h2 id="week-h" className="t-2">This week</h2>
+          <span className="faint t-small">compared with the same days last week</span>
+        </div>
+        <div className="card stat-strip">
+          {[
+            { label: 'games', v: fmt(w.thisWeek.games), d: w.delta.games, dd: 0 },
+            { label: 'score', v: `${fmt(w.thisWeek.scorePercent)}%`, d: w.delta.scorePercent, dd: 0 },
+            { label: 'accuracy', v: fmt(w.thisWeek.accuracy, 1), d: w.delta.accuracy, dd: 1 },
+            { label: 'errors per 100 moves', v: fmt(w.thisWeek.errorsPer100, 1), d: w.delta.errorsPer100, dd: 1, invert: true },
+          ].map((x) => {
+            const good = x.d !== null && x.d !== undefined && x.d !== 0 ? (x.d > 0) !== !!x.invert : null;
+            return (
+              <div key={x.label}>
+                <div className="display num">{x.v}</div>
+                <p className="faint t-small">
+                  {x.label}{' '}
+                  {signed(x.d, x.dd) && good !== null && (
+                    <span className={`delta ${good ? 'up' : 'down'}`}>{signed(x.d, x.dd)}</span>
+                  )}
+                </p>
+              </div>
+            );
+          })}
         </div>
       </section>
 
       {active && (
-        <section className="section">
+        <section className="section" aria-labelledby="rating-h">
           <div className="section-head">
-            <h2 className="t-2">Rating</h2>
-            <div className="chips">
-              {series.map((s) => (
-                <button key={s.timeClass} className={`chip ${s === active ? 'on' : ''}`} onClick={() => setTc(s.timeClass)} style={{ textTransform: 'capitalize' }}>{s.timeClass}</button>
-              ))}
-            </div>
+            <h2 id="rating-h" className="t-2">Rating</h2>
+            <span className="grow" />
+            {series.length > 1 && (
+              <Seg
+                label="Time control"
+                value={active.timeClass}
+                options={series.map((s) => [s.timeClass, cap(s.timeClass)] as const)}
+                onChange={setTc}
+              />
+            )}
           </div>
-          <div className="panel panel-pad">
-            <RatingChart points={active.points.map((p) => p.value)} />
-            <p className="quiet t-small" style={{ marginTop: 8 }}>
-              Last 7 days <b className="num">{signed(active.delta7) || '–'}</b>, last 30 days <b className="num">{signed(active.delta30) || '–'}</b>.
+          <div className="card card-pad">
+            <LineChart key={active.timeClass} label={`${cap(active.timeClass)} rating`} points={active.points.map((p) => ({ t: p.time, v: p.value }))} baseline={active.points[0].value} />
+            <p className="faint t-small" style={{ marginTop: 6 }}>
+              Last 7 days <b className="num" style={{ color: 'var(--ink)' }}>{signed(active.delta7) || '–'}</b>, last 30 days <b className="num" style={{ color: 'var(--ink)' }}>{signed(active.delta30) || '–'}</b>. The dashed line is where this period started.
             </p>
           </div>
         </section>
       )}
 
-      <section className="section today">
-        <div className="plain">
-          <h2 className="t-3">Clock</h2>
-          <p className="quiet t-small" style={{ marginBottom: 12 }}>How your time management turns into mistakes.</p>
-          <Stat label="of your errors happen in time trouble" value={`${fmt(data.clock.timeTroublePercent)}%`} />
-          <Stat label="of your errors are played in under 3 seconds" value={`${fmt(data.clock.rushingPercent)}%`} />
-          {(['opening', 'middlegame', 'endgame'] as const).map((p) => (
-            <Stat key={p} label={`seconds per move in the ${p}`} value={fmt(data.clock.byPhase[p].average, 1)} />
-          ))}
-        </div>
-        <div className="plain">
-          <h2 className="t-3">Converting and saving games</h2>
-          <p className="quiet t-small" style={{ marginBottom: 12 }}>Winning positions you won, and lost positions you saved.</p>
-          <Stat label={`of ${data.conv.opportunities} winning positions converted`} value={`${fmt(data.conv.percent)}%`} />
-          <Stat label={`of ${data.comeback.opportunities} lost positions saved`} value={`${fmt(data.comeback.percent)}%`} />
-          <Stat label="blunders per 100 moves" value={fmt(data.errors.blundersPer100, 1)} />
-          <Stat label="mistakes per 100 moves" value={fmt(data.errors.mistakesPer100, 1)} />
-        </div>
-      </section>
+      <div className="cols-even section">
+        {data.acc.length > 2 && (
+          <section className="card card-pad" aria-labelledby="acc-h">
+            <h2 id="acc-h" className="t-3">Accuracy, five-game average</h2>
+            <LineChart label="Accuracy, rolling five-game average" height={160} points={data.acc.map((p) => ({ t: p.time, v: p.rollingAverage }))} format={(v) => v.toFixed(0)} />
+          </section>
+        )}
+        {data.tcs.length > 0 && (
+          <section className="card card-pad" aria-labelledby="tc-h">
+            <h2 id="tc-h" className="t-3">Results by time control</h2>
+            <p className="faint t-small" style={{ marginBottom: 10 }}>Wins, draws and losses; the number is your score.</p>
+            {data.tcs.map((x, i) => (
+              <motion.div key={x.timeControl} className="hbar-row" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: staggerDelay(i, data.tcs.length) }}>
+                <span className="lbl" style={{ textTransform: 'capitalize' }}>
+                  {x.timeClass} <span className="faint num">{fmtTc(x.timeControl)}</span>
+                </span>
+                <WdlBar w={x.wins} d={x.draws} l={x.losses} />
+                <span className="v">{Math.round(x.scorePercent)}%</span>
+              </motion.div>
+            ))}
+            <div className="row t-tiny faint strong" style={{ gap: 14, marginTop: 10 }}>
+              <span className="row" style={{ gap: 5 }}><span className="dot" style={{ background: 'var(--good-fill)' }} /> Won</span>
+              <span className="row" style={{ gap: 5 }}><span className="dot" style={{ background: 'var(--ink-4)' }} /> Drew</span>
+              <span className="row" style={{ gap: 5 }}><span className="dot" style={{ background: 'var(--bad-fill)' }} /> Lost</span>
+            </div>
+          </section>
+        )}
+        {data.pieces.length > 0 && (
+          <section className="card card-pad" aria-labelledby="pc-h">
+            <h2 id="pc-h" className="t-3">Which piece you blunder with</h2>
+            <p className="faint t-small" style={{ marginBottom: 10 }}>The piece that made the losing move.</p>
+            {data.pieces.map((p, i) => (
+              <div key={p.piece} className="hbar-row">
+                <span className="lbl">{cap(p.name)}</span>
+                <span className="bar" style={{ height: 10, borderRadius: 3, background: 'var(--surface-2)', overflow: 'hidden' }}>
+                  <motion.i
+                    style={{ display: 'block', height: '100%', borderRadius: 3, background: i === 0 ? 'var(--c-blunder)' : 'var(--ink-3)', transformOrigin: 'left' }}
+                    initial={{ scaleX: 0 }}
+                    animate={{ scaleX: Math.max(0.02, p.percent / 100) }}
+                    transition={{ ...spring.smooth, delay: staggerDelay(i, data.pieces.length) }}
+                  />
+                </span>
+                <span className="v">{p.blunders}</span>
+              </div>
+            ))}
+          </section>
+        )}
+        {data.swings.length > 0 && (
+          <section className="card" aria-labelledby="sw-h" style={{ overflow: 'hidden' }}>
+            <div className="card-head" style={{ paddingBottom: 8 }}>
+              <h2 id="sw-h">Moments that swung games</h2>
+            </div>
+            {data.swings.map((s) => {
+              const g = gameById.get(s.gameId);
+              const m = analysisById.get(s.gameId)?.moves[s.ply - 1];
+              return (
+                <a key={`${s.gameId}:${s.ply}`} className="moment-row" href={`#/review/${encodeURIComponent(s.gameId)}`} style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                  <span className="t">
+                    {m ? cap(plainMove(m.fenBefore, m.san, g?.userColor, 'short').replace(/[+#]$/, '')) : s.san}
+                    <span className="faint" style={{ fontWeight: 500, display: 'block', fontSize: 'var(--fs-12)' }}>
+                      {g ? `against ${g.userColor === 'w' ? g.black.username : g.white.username}, ` : ''}move {Math.ceil(s.ply / 2)}
+                    </span>
+                  </span>
+                  <span className="num t-small strong">
+                    {Math.round(s.winBefore)}% <span className="faint">to</span> <span className="bad-text">{Math.round(s.winAfter)}%</span>
+                  </span>
+                </a>
+              );
+            })}
+          </section>
+        )}
+      </div>
 
-      <section className="section">
+      <section className="section" aria-labelledby="op-h">
         <div className="section-head">
-          <h2 className="t-2">Openings</h2>
+          <h2 id="op-h" className="t-2">Openings</h2>
           <span className="grow" />
-          {leaks.length > 0 && <button className="key ink sm" onClick={addOpeningDrills}>Drill my opening mistakes</button>}
+          {leaks.length > 0 && (
+            <button className="btn primary sm" onClick={addOpeningDrills}>
+              Drill my opening mistakes
+            </button>
+          )}
         </div>
         {!summary ? (
-          <p className="quiet"><span className="spin" /> Building your repertoire…</p>
+          <div className="cols-even">
+            <Skeleton h={220} r={14} />
+            <Skeleton h={220} r={14} />
+          </div>
         ) : (
-          <div className="today">
+          <div className="cols-even">
             {(['w', 'b'] as const).map((c) => (
-              <div key={c} className="panel panel-pad">
-                <h3 className="t-3" style={{ marginBottom: 8 }}>As {c === 'w' ? 'White' : 'Black'}</h3>
-                {summary[c].openings.slice(0, 6).map((o) => {
-                  const pct = o.count ? Math.round((100 * (o.wins + o.draws / 2)) / o.count) : 0;
-                  return (
-                    <div key={o.opening} className="leak-row" style={{ gridTemplateColumns: 'minmax(0,1fr) 90px 44px' }}>
-                      <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.opening}>{o.opening}</span>
-                      <span className="meter"><i style={{ width: `${pct}%`, background: pct >= 50 ? 'var(--ink)' : 'var(--c-mistake)' }} /></span>
-                      <span className="num t-small" style={{ textAlign: 'right' }}>{pct}% <span className="faint">({o.count})</span></span>
-                    </div>
-                  );
-                })}
+              <div key={c} className="card card-pad">
+                <h3 className="t-3 row" style={{ marginBottom: 8, gap: 8 }}>
+                  <span className={`piece-dot ${c}`} /> As {c === 'w' ? 'White' : 'Black'}
+                </h3>
+                {summary[c].openings.slice(0, 6).map((o) => (
+                  <div key={o.opening} className="hbar-row" style={{ gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr) 64px' }}>
+                    <span className="lbl" title={o.opening}>{o.opening}</span>
+                    <WdlBar w={o.wins} d={o.draws} l={o.count - o.wins - o.draws} />
+                    <span className="v">
+                      {o.count ? Math.round((100 * (o.wins + o.draws / 2)) / o.count) : 0}% <span className="faint" style={{ fontWeight: 500 }}>{o.count}</span>
+                    </span>
+                  </div>
+                ))}
                 {summary[c].firstOutOfBook && (
-                  <p className="quiet t-small" style={{ marginTop: 10 }}>
-                    You most often leave known theory with <b>{summary[c].firstOutOfBook!.san}</b> on move {Math.ceil(summary[c].firstOutOfBook!.ply / 2)}.
+                  <p className="faint t-small" style={{ marginTop: 10 }}>
+                    You most often leave known theory on move {Math.ceil(summary[c].firstOutOfBook!.ply / 2)} ({summary[c].firstOutOfBook!.san}).
                   </p>
                 )}
               </div>
@@ -195,76 +274,106 @@ export function Insights() {
           </div>
         )}
         {leaks.length > 0 && (
-          <div className="panel panel-pad" style={{ marginTop: 16 }}>
-            <h3 className="t-3" style={{ marginBottom: 6 }}>Habits that cost you in the opening</h3>
+          <div className="card" style={{ marginTop: 16, overflow: 'hidden' }}>
+            <div className="card-head" style={{ paddingBottom: 8 }}>
+              <h3>Habits that cost you in the opening</h3>
+            </div>
             {leaks.map((l) => (
-              <a key={l.epd} className="bank-row" href={`#/review/${encodeURIComponent(l.gameIds[0])}`} style={{ gridTemplateColumns: '1fr auto' }}>
-                <span>
-                  {l.opening ?? 'Opening'}: you play <b>{l.move.san}</b> as {l.color === 'w' ? 'White' : 'Black'}
-                  {l.bestSan ? <>, the engine prefers <b>{l.bestSan}</b></> : null}
+              <a key={l.epd} className="moment-row" href={`#/review/${encodeURIComponent(l.gameIds[0])}`} style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                <span className="t">
+                  In the {l.opening ?? 'opening'} you play {plainMove(l.fen, l.move.san, l.color, 'short').toLowerCase()}
+                  {l.bestSan ? <span className="faint" style={{ fontWeight: 500 }}>; the engine prefers {plainMove(l.fen, l.bestSan, l.color, 'short').toLowerCase()}</span> : null}
                 </span>
-                <span className="faint t-small num">{l.move.count} games, {Math.round(l.scorePct)}%</span>
+                <span className="faint t-small num">
+                  {l.move.count} games, {Math.round(l.scorePct)}%
+                </span>
               </a>
             ))}
           </div>
         )}
       </section>
-
-      {data.swings.length > 0 && (
-        <section className="section">
-          <div className="section-head"><h2 className="t-2">Moments that swung games</h2></div>
-          <div className="panel panel-pad">
-            {data.swings.map((s) => (
-              <a key={`${s.gameId}:${s.ply}`} className="bank-row" href={`#/review/${encodeURIComponent(s.gameId)}`} style={{ gridTemplateColumns: '80px 1fr auto' }}>
-                <b className="num">{Math.ceil(s.ply / 2)}{s.ply % 2 ? '.' : '…'} {s.san}</b>
-                <span className="quiet">winning chances {Math.round(s.winBefore)}% → {Math.round(s.winAfter)}%</span>
-                <span className="due num">−{Math.round(s.epLoss * 100)}</span>
-              </a>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {data.acc.length > 2 && (
-        <p className="faint t-small" style={{ marginTop: 28 }}>
-          Your rolling accuracy is {fmt(data.acc[data.acc.length - 1].rollingAverage, 1)} over the last five reviewed games.
-        </p>
-      )}
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function fmtTc(tc: string) {
+  const [base, inc] = tc.split('+').map(Number);
+  if (!Number.isFinite(base)) return tc;
+  const m = base >= 60 ? `${Math.round(base / 60)} min` : `${base} s`;
+  return inc ? `${m} + ${inc}` : m;
+}
+
+function Trend({ t }: { t?: 'up' | 'down' | 'flat' }) {
+  if (!t) return null;
+  const I = t === 'up' ? TrendingUp : t === 'down' ? TrendingDown : Minus;
   return (
-    <div className="row" style={{ padding: '8px 0', borderTop: '1px solid var(--rule)', gap: 14 }}>
-      <span className="display num" style={{ fontSize: 30, minWidth: 74 }}>{value}</span>
-      <span className="quiet">{label}</span>
-    </div>
+    <span className="trend faint">
+      <I />
+    </span>
   );
 }
 
-function RatingChart({ points }: { points: number[] }) {
-  const W = 800;
-  const H = 180;
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const pad = Math.max(10, (max - min) * 0.1);
-  const lo = min - pad;
-  const hi = max + pad;
-  const x = (i: number) => (i / (points.length - 1)) * W;
-  const y = (v: number) => H - ((v - lo) / (hi - lo)) * H;
-  const d = points.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
-  const last = points[points.length - 1];
+function LeadCard({ c }: { c: InsightCard }) {
+  const sev = SEV[c.severity];
   return (
-    <div style={{ position: 'relative' }}>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: 180, display: 'block' }} role="img" aria-label={`Rating from ${points[0]} to ${last}`}>
-        <line x1="0" x2={W} y1={y(points[0])} y2={y(points[0])} stroke="var(--rule-2)" strokeDasharray="3 5" vectorEffect="non-scaling-stroke" />
-        <path d={d} fill="none" stroke="var(--ink)" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-      </svg>
-      <div className="row" style={{ justifyContent: 'space-between', marginTop: 6 }}>
-        <span className="faint num t-small">{points[0]}</span>
-        <span className="display num" style={{ fontSize: 34 }}>{last}</span>
+    <motion.div {...enter} className="card insight-lead">
+      <div className="stack" style={{ gap: 10 }}>
+        <span className="row strong t-small" style={{ gap: 8, color: 'var(--ink-2)' }}>
+          <span className="dot" style={{ background: sev.color }} /> {sev.word}
+        </span>
+        <h2 className="display" style={{ fontSize: 'clamp(1.75rem, 3vw, 2.5rem)', maxWidth: '22ch' }}>{c.title}</h2>
+        <p className="quiet measure" style={{ fontSize: 'var(--fs-16)' }}>{c.body}</p>
+        {c.cta && (
+          <a className="btn go" href={c.cta.href} style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+            {c.cta.label} <ArrowRight />
+          </a>
+        )}
       </div>
-    </div>
+      {c.metric && (
+        <div style={{ textAlign: 'right' }}>
+          <div className="display metric num">{c.metric.value}</div>
+          <p className="faint t-small row" style={{ justifyContent: 'flex-end', gap: 6 }}>
+            {c.metric.label} <Trend t={c.metric.trend} />
+          </p>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+/** Two wide cards lead, then rows of three; the last row stretches so the grid never ends ragged. */
+function spanFor(i: number, n: number): number {
+  const lead = n >= 4 ? 2 : n % 2 === 0 ? n : n - 1;
+  if (i < lead) return 3;
+  const m = n - lead;
+  const j = i - lead;
+  const tail = m % 3;
+  if (tail === 1 && j === m - 1) return 6;
+  if (tail === 2 && j >= m - 2) return 3;
+  return 2;
+}
+
+function Card({ c, i, span, total }: { c: InsightCard; i: number; span: number; total: number }) {
+  const sev = SEV[c.severity];
+  return (
+    <motion.article className="card insight" style={{ ['--span' as string]: span }} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, delay: staggerDelay(i, total) }}>
+      <span className="sev" style={{ color: 'var(--ink-3)' }}>
+        <span className="dot" style={{ background: sev.color }} /> {sev.word}
+      </span>
+      {c.metric && (
+        <div className="metric">
+          <span className="display num">{c.metric.value}</span>
+          <span className="faint t-small">{c.metric.label}</span>
+          <Trend t={c.metric.trend} />
+        </div>
+      )}
+      <h3>{c.title}</h3>
+      <p>{c.body}</p>
+      {c.cta && (
+        <a className="btn sm" href={c.cta.href}>
+          {c.cta.label}
+        </a>
+      )}
+    </motion.article>
   );
 }

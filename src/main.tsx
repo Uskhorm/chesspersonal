@@ -3,9 +3,12 @@ import { createRoot } from 'react-dom/client';
 import '@lichess-org/chessground/assets/chessground.base.css';
 import '@lichess-org/chessground/assets/chessground.cburnett.css';
 import './styles.css';
+import { initTheme } from './lib/theme';
 import { App } from './App';
 import { persistStorage, registerSW } from './lib/pwa';
 
+// Apply the saved or system theme before the first paint (index.html does the same inline).
+initTheme();
 void registerSW();
 void persistStorage();
 

@@ -1,4 +1,4 @@
-/** Achievement medals: one drawn glyph per achievement, gold when earned, an outline when locked. */
+/** Achievement medals: one drawn glyph per achievement, gold when earned, a dashed outline when locked. */
 const GLYPHS: Record<string, string> = {
   'first-review': 'M10 4a6 6 0 1 1 0 12 6 6 0 0 1 0-12zm4.5 10.5L20 20',
   brilliant: 'M12 3l7 6-7 12-7-12z M5 9h14',
@@ -16,11 +16,11 @@ const GLYPHS: Record<string, string> = {
 
 export function Medal({ id, got }: { id: string; got: boolean }) {
   return (
-    <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
-      <circle cx="28" cy="28" r="26" fill={got ? '#f2b705' : 'none'} stroke={got ? '#b88a00' : '#c9ccc6'} strokeWidth="2" strokeDasharray={got ? undefined : '4 4'} />
-      {got && <circle cx="28" cy="28" r="20" fill="none" stroke="#ffffff66" strokeWidth="1.5" />}
+    <svg width="48" height="48" viewBox="0 0 56 56" aria-hidden="true" style={{ flex: 'none' }}>
+      <circle cx="28" cy="28" r="26" fill={got ? '#f2b705' : 'none'} stroke={got ? '#c99300' : 'var(--line-3)'} strokeWidth="2" strokeDasharray={got ? undefined : '4 4'} />
+      {got && <circle cx="28" cy="28" r="20" fill="none" stroke="#ffffff70" strokeWidth="1.5" />}
       <g transform="translate(16 16)">
-        <path d={GLYPHS[id] ?? 'M12 4l2 6h6l-5 4 2 6-5-4-5 4 2-6-5-4h6z'} fill="none" stroke={got ? '#241a00' : '#9ea3ad'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={GLYPHS[id] ?? 'M12 4l2 6h6l-5 4 2 6-5-4-5 4 2-6-5-4h6z'} fill="none" stroke={got ? '#2a1e00' : 'var(--ink-3)'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
       </g>
     </svg>
   );

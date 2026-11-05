@@ -1,6 +1,28 @@
 import Dexie, { type EntityTable, type Transaction } from 'dexie';
 import type { Drill, GameAnalysis, StoredGame } from './types';
 
+export interface AnalysisSummary {
+  gameId: string;
+  accuracy: number;
+  counts: GameAnalysis['white']['counts'];
+  curve: number[];
+  opening?: string;
+  eco?: string;
+  userColor: StoredGame['userColor'];
+}
+
+function summarize(analysis: GameAnalysis, game?: StoredGame): AnalysisSummary {
+  const userColor = game?.userColor ?? 'w';
+  const side = userColor === 'w' ? analysis.white : analysis.black;
+  const curve = analysis.winCurve ?? [];
+  return {
+    gameId: analysis.gameId, userColor, accuracy: side?.accuracy ?? 0,
+    counts: side?.counts ?? {} as AnalysisSummary['counts'],
+    curve: curve.length <= 64 ? [...curve] : Array.from({ length: 64 }, (_, i) => curve[Math.round(i * (curve.length - 1) / 63)]),
+    opening: analysis.opening, eco: analysis.eco ?? game?.eco,
+  };
+}
+
 export const collections = ['games', 'analyses', 'drills', 'activity'] as const;
 export type Collection = typeof collections[number] | 'progress';
 export interface OutboxEntry {
@@ -43,6 +65,7 @@ class ChessDB extends Dexie {
   analyses!: EntityTable<GameAnalysis, 'gameId'>;
   drills!: EntityTable<Drill, 'id'>;
   activity!: EntityTable<ActivityDay, 'day'>;
+  summaries!: EntityTable<AnalysisSummary, 'gameId'>;
 
   constructor() {
     super('chesspersonal');
@@ -59,14 +82,35 @@ class ChessDB extends Dexie {
       activity: 'day',
       outbox: 'id, collection, updated_at',
     });
+    this.version(3).stores({ summaries: 'gameId' }).upgrade(async transaction => {
+      const games = new Map((await transaction.table<StoredGame>('games').toArray()).map(game => [game.id, game]));
+      await transaction.table<GameAnalysis>('analyses').each(analysis => {
+        transaction.idbtrans.objectStore('summaries').put(summarize(analysis, games.get(analysis.gameId)));
+      });
+    });
     // Hooks run inside the originating transaction, including explicit single-table
     // transactions. Expand its native scope so the outbox write is atomic.
     this.use({ stack: 'dbcore', name: 'sync-outbox-scope', create: core => ({
       ...core,
       transaction: (stores, mode, options) => core.transaction(
         mode === 'readwrite' && stores.some(name => collections.includes(name as typeof collections[number]))
-          ? [...new Set([...stores, 'outbox'])] : stores, mode, options),
+          ? [...new Set([...stores, 'outbox', ...(stores.includes('analyses') ? ['summaries', 'games'] : [])])] : stores, mode, options),
     }) });
+    const writeSummary = (analysis: GameAnalysis, transaction: Transaction) => {
+      const request = transaction.idbtrans.objectStore('games').get(analysis.gameId);
+      request.onsuccess = () => transaction.idbtrans.objectStore('summaries').put(summarize(analysis, request.result));
+    };
+    this.analyses.hook('creating', (key, analysis, transaction) => {
+      writeSummary({ ...analysis, gameId: String(key ?? analysis.gameId) }, transaction);
+    });
+    this.analyses.hook('updating', (changes, key, analysis, transaction) => {
+      const updated = structuredClone(analysis);
+      for (const [path, value] of Object.entries(changes)) Dexie.setByKeyPath(updated, path, value);
+      writeSummary({ ...updated, gameId: String(key) }, transaction);
+    });
+    this.analyses.hook('deleting', (key, _analysis, transaction) => {
+      transaction.idbtrans.objectStore('summaries').delete(key);
+    });
     for (const collection of collections) {
       const table = this.table(collection);
       const enqueue = (key: unknown, transaction: Transaction, deleted = false, after = 0) => {

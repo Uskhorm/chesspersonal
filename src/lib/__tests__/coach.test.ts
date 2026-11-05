@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Chess } from 'chess.js';
-import { bestMovePlan, explainMove, hints, replaySan } from '../coach';
+import { bestMovePlan, explainMove, hints, replaySan, positionFeatures, threatsAfter } from '../coach';
+import { describeMove } from '../narrate';
 import type { AnalysedMove } from '../types';
 
 function fixture(fen: string, played: string, best: string[], reply: string[] = []): AnalysedMove {
@@ -17,7 +18,7 @@ const sentences = (s: string) => s.split(/[.!?]+/).map(x => x.trim()).filter(Boo
 
 function expectNatural(m: AnalysedMove) {
   const e = explainMove(m), plan = bestMovePlan(m);
-  expect(e.headline).toBe(`Better: ${plan.san}.`);
+  expect(e.headline).toBe(plan.line.length ? `Better: ${describeMove(m.fenBefore, plan.san, { perspective: m.color }).toLowerCase()}.` : 'Better: recheck the saved position.');
   expect(words(e.rule)).toBeLessThanOrEqual(12);
   expect(e.rule).not.toMatch(/\b[a-h][1-8]\b/);
   expect(words(e.headline)).toBeLessThanOrEqual(12);
@@ -52,9 +53,9 @@ describe('human coaching from legal engine lines', () => {
 
   it('explains a queen loss once in plain material terms', () => {
     const e = explainMove(queen());
-    expect(e.headline).toBe('Better: Qxd8+.');
-    expect(e.detail).toContain('Rxd4');
-    expect(e.detail).toContain('you lose your queen');
+    expect(e.headline).toBe('Better: your queen takes the rook on d8, check.');
+    expect(e.detail).toContain('their rook takes the queen on d4');
+    expect(e.detail).toContain('You lose your queen');
     expect(e.detail).toMatch(/^It takes the rook on d8 with check\./);
     expect(e.tags).toEqual(expect.arrayContaining(['hanging-piece', 'material']));
   });
@@ -65,7 +66,7 @@ describe('human coaching from legal engine lines', () => {
     expectNatural(black);
     expect(bestMovePlan(black).idea).toContain('their king');
     const allowed = fixture('6k1/5ppp/8/8/8/8/4r3/R5K1 b - - 0 1', 'Rh2', ['Re1+'], ['Ra8#']);
-    expect(explainMove(allowed).detail).toContain('your opponent forces checkmate with Ra8#');
+    expect(explainMove(allowed).detail).toContain('Your opponent forces checkmate: their rook moves to a8, checkmate');
     expectNatural(allowed);
   });
 
@@ -80,18 +81,18 @@ describe('human coaching from legal engine lines', () => {
 
   it('counts recaptures before claiming a material loss', () => {
     const m = fixture('3q2k1/8/8/3p4/8/8/8/3R2K1 w - - 0 1', 'Rxd5', ['Rd2'], ['Qxd5']);
-    expect(explainMove(m).detail).toContain('you lose your rook');
+    expect(explainMove(m).detail).toContain('You lose your rook');
     const trade = fixture('3r2k1/8/8/8/3R4/4P3/7P/6K1 w - - 0 1', 'h3', ['Rxd8+'], ['Rxd4', 'exd4']);
-    expect(explainMove(trade).detail).not.toContain('you lose');
+    expect(explainMove(trade).detail).not.toContain('You lose');
     const uneven = fixture('3r2k1/8/8/8/3Q4/4P3/7P/6K1 w - - 0 1', 'h3', ['Qxd8+'], ['Rxd4', 'exd4']);
-    expect(explainMove(uneven).detail).toContain('you lose your queen for too little in return');
+    expect(explainMove(uneven).detail).toContain('You lose your queen for too little in return');
     expectNatural(uneven);
     expectNatural(m);
   });
 
   it('does not count unrelated captures after two quiet plies', () => {
     const m = fixture(new Chess().fen(), 'e4', ['d4'], ['d5', 'Nf3', 'dxe4']);
-    expect(explainMove(m).detail).not.toContain('you lose');
+    expect(explainMove(m).detail).not.toContain('You lose');
     expect(bestMovePlan(m).lineExplained).toEqual([{ san: 'd4' }]);
   });
 
@@ -146,8 +147,8 @@ describe('human coaching from legal engine lines', () => {
   it('summarises preparation before the key tactic rather than every capture', () => {
     const m = fixture('6k1/8/b4n2/1B6/1q6/2N5/2QB4/4K3 b - - 0 1', 'Nh5', ['Bxb5', 'Nxb5', 'Qe4+', 'Qxe4']);
     expect(bestMovePlan(m).line).toEqual(['Bxb5', 'Nxb5', 'Qe4+', 'Qxe4']);
-    expect(explainMove(m).headline).toBe('Better: Bxb5.');
-    expect(explainMove(m).detail).toContain('It takes the bishop, and after Nxb5 your Qe4+ forks');
+    expect(explainMove(m).headline).toBe('Better: your bishop takes the bishop on b5.');
+    expect(explainMove(m).detail).toContain('prepares a later queen move that forks');
     expect(bestMovePlan(m).idea).toContain('king on e1 and queen on c2');
     expect(hints(m)[1].text).toContain('Take the bishop on b5 first');
     expectNatural(m);
@@ -163,5 +164,54 @@ describe('human coaching from legal engine lines', () => {
     expect(hs[1].text).not.toContain('it was guarding the e4 square');
     expect(hs[1].text).not.toMatch(/Look for a check|Give check|Check their king|Bxb5|Qe4/);
     expect(hs[2].highlight?.arrow).toEqual(['a6', 'b5']);
+  });
+});
+
+describe('position features and quiet-move reasoning', () => {
+  it('explains a weakened king shield with highlight squares', () => {
+    const m = fixture('6k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 12', 'g4', ['Kf1']);
+    const e = explainMove(m);
+    expect(e.points).toContainEqual({ kind: 'bad', text: 'This weakens the pawn shield around your king.', squares: ['g1', 'g2'] });
+    expect(e.detail).toContain('pawn shield');
+    expect(e.tags).toContain('king-safety');
+  });
+
+  it('finds an undefended bishop when its defender moves away', () => {
+    const m = fixture('6k1/5ppp/8/8/2B5/3P4/5PPP/6K1 w - - 0 12', 'd4', ['Kf1']);
+    const e = explainMove(m);
+    expect(e.points).toContainEqual({ kind: 'bad', text: 'This leaves your bishop on c4 undefended.', squares: ['c4'] });
+    expect(positionFeatures(m.fenAfter, 'w').undefended).toContain('c4');
+  });
+
+  it('recognises passed pawns and explains creating one', () => {
+    const m = fixture('6k1/8/3p4/4P3/8/8/7P/6K1 w - - 0 20', 'h3', ['exd6']);
+    expect(positionFeatures(new Chess(m.fenBefore).fen(), 'w').pawns.passed).not.toContain('e5');
+    expect(explainMove(m).points).toContainEqual({ kind: 'good', text: 'Your pawn on d6 is passed: no enemy pawn can block or capture it from ahead.', squares: ['d6'] });
+    expect(explainMove(m).tags).toContain('passed-pawn');
+  });
+
+  it('compares opening development and highlights the piece to develop', () => {
+    const m = fixture(new Chess().fen(), 'a3', ['Nf3']);
+    const start = positionFeatures(m.fenBefore, 'w');
+    expect(start.development).toEqual({ opening: true, undeveloped: ['b1', 'c1', 'f1', 'g1'], developed: 0 });
+    expect(explainMove(m).points).toContainEqual({ kind: 'good', text: 'This develops your piece and brings it into play.', squares: ['g1'] });
+    expect(explainMove(m).tags).toContain('development');
+  });
+
+  it('detects open king files, loose attacked pieces and legal capture threats', () => {
+    const f = positionFeatures(queen().fenAfter, 'w');
+    expect(f.kingSafety.openFiles).toContain('f');
+    expect(f.looseAttacked).toContain('d4');
+    expect(f.hanging).toContain('d4');
+    expect(f.mobility).toBeGreaterThan(0);
+    expect(threatsAfter(queen())).toEqual(['Your opponent can play: their rook takes the queen on d4.']);
+    for (const text of threatsAfter(queen())) expect(text).not.toContain('Rxd4');
+  });
+
+  it('detects isolated and doubled pawns without treating blocked pawns as passed', () => {
+    const f = positionFeatures('6k1/8/2p5/8/2P5/P7/P7/6K1 w - - 0 20', 'w');
+    expect(f.pawns.doubled).toEqual(['a3', 'a2']);
+    expect(f.pawns.isolated).toEqual(['c4', 'a3', 'a2']);
+    expect(f.pawns.passed).not.toContain('c4');
   });
 });

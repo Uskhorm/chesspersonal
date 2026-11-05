@@ -12,24 +12,51 @@ interface QueueState {
   done: number;
   total: number;
   queued: string[];
+  batchTotal: number;
+  batchDone: number;
   syncing: boolean;
   error: string | null;
 }
 
-export const useQueue = create<QueueState>(() => ({ current: null, done: 0, total: 0, queued: [], syncing: false, error: null }));
+export const useQueue = create<QueueState>(() => ({ current: null, done: 0, total: 0, queued: [], batchTotal: 0, batchDone: 0, syncing: false, error: null }));
 
 const DRILL_CLASSES = new Set(['mistake', 'blunder', 'miss']);
 
-export async function syncGames(): Promise<StoredGame[]> {
+let syncedUsername: string | null = null;
+let syncing: Promise<StoredGame[]> | undefined;
+let syncingUsername: string | null = null;
+useStore.subscribe((state, previous) => {
+  if (state.username !== previous.username) syncedUsername = null;
+});
+
+export function syncGames(): Promise<StoredGame[]> {
+  const username = useStore.getState().username;
+  if (!username) return Promise.resolve([]);
+  if (syncing) return syncingUsername === username ? syncing : syncing.then(() => syncGames());
+  syncingUsername = username;
+  syncing = performSync().finally(() => { syncing = undefined; });
+  return syncing;
+}
+
+async function performSync(): Promise<StoredGame[]> {
   const username = useStore.getState().username;
   if (!username) return [];
   useQueue.setState({ syncing: true, error: null });
   try {
     const games = await fetchRecentGames(username, 2);
+    if (useStore.getState().username !== username) return [];
     const existing = new Set(await db.games.toCollection().primaryKeys());
     const fresh = games.filter((g) => !existing.has(g.id));
     if (fresh.length) await db.games.bulkPut(fresh);
     useStore.getState().setSynced();
+    if (syncedUsername !== username) {
+      await analyseRecent();
+      syncedUsername = username;
+    } else {
+      for (const game of fresh.sort((a, b) => b.endTime - a.endTime)) {
+        void enqueueAnalysis(game.id).catch(() => { /* reported by pump */ });
+      }
+    }
     return fresh;
   } catch (e) {
     useQueue.setState({ error: (e as Error).message });
@@ -40,16 +67,53 @@ export async function syncGames(): Promise<StoredGame[]> {
 }
 
 let running = false;
-const waiters = new Map<string, ((a: GameAnalysis) => void)[]>();
+const waiters = new Map<string, { resolve: (a: GameAnalysis) => void; reject: (error: unknown) => void }[]>();
+let trainingPaused = false;
+let hiddenSince: number | null = null;
+let visibilityInstalled = false;
+let hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+const HIDDEN_LIMIT = 5 * 60_000;
+
+function installVisibility() {
+  if (visibilityInstalled || typeof document === 'undefined') return;
+  visibilityInstalled = true;
+  const changed = () => {
+    clearTimeout(hiddenTimer);
+    hiddenSince = document.hidden ? Date.now() : null;
+    if (hiddenSince !== null) hiddenTimer = setTimeout(() => { void pump(); }, HIDDEN_LIMIT);
+    else void pump();
+  };
+  document.addEventListener('visibilitychange', changed);
+  changed();
+}
+
+/** Pauses between games; an engine search already in flight finishes safely. */
+export function pauseAnalysis(paused: boolean): void {
+  trainingPaused = paused;
+  if (!paused) void pump();
+}
+
+/** Queue the newest unanalysed local games. Resolves once queued, not analysed. */
+export async function analyseRecent(n = 10): Promise<void> {
+  if (!Number.isFinite(n) || n <= 0) return;
+  const games = await db.games.orderBy('endTime').reverse().filter(g => !g.analysed).limit(Math.floor(n)).toArray();
+  for (const game of games) void enqueueAnalysis(game.id).catch(() => { /* reported by pump */ });
+}
 
 export function enqueueAnalysis(id: string, priority = false): Promise<GameAnalysis> {
+  installVisibility();
   const q = useQueue.getState();
-  return new Promise((resolve) => {
-    waiters.set(id, [...(waiters.get(id) ?? []), resolve]);
+  return new Promise((resolve, reject) => {
+    waiters.set(id, [...(waiters.get(id) ?? []), { resolve, reject }]);
     if (q.current !== id && !q.queued.includes(id)) {
-      useQueue.setState({ queued: priority ? [id, ...q.queued] : [...q.queued, id] });
+      const idle = !q.current && !q.queued.length;
+      useQueue.setState({
+        queued: priority ? [id, ...q.queued] : [...q.queued, id],
+        batchTotal: idle ? 1 : q.batchTotal + 1,
+        batchDone: idle ? 0 : q.batchDone,
+      });
     } else if (priority && q.queued.includes(id)) {
-      useQueue.setState({ queued: [id, ...q.queued.filter((x) => x !== id)] });
+      useQueue.setState({ queued: [id, ...q.queued.filter(x => x !== id)] });
     }
     void pump();
   });
@@ -60,17 +124,21 @@ async function pump() {
   running = true;
   try {
     while (useQueue.getState().queued.length) {
+      if (trainingPaused || (hiddenSince !== null && Date.now() - hiddenSince >= HIDDEN_LIMIT)) break;
       const [id, ...rest] = useQueue.getState().queued;
       useQueue.setState({ queued: rest, current: id, done: 0, total: 0 });
-      const game = await db.games.get(id);
-      if (!game) continue;
       try {
-        const a = await analyseAndStore(game);
-        for (const w of waiters.get(id) ?? []) w(a);
-        waiters.delete(id);
+        const game = await db.games.get(id);
+        if (!game) throw new Error(`Game not found: ${id}`);
+        const a = await db.analyses.get(id) ?? await analyseAndStore(game);
+        for (const waiter of waiters.get(id) ?? []) waiter.resolve(a);
       } catch (e) {
-        console.error(e);
+        useQueue.setState({ error: (e as Error).message });
+        for (const waiter of waiters.get(id) ?? []) waiter.reject(e);
         emit({ type: 'toast', text: `Analysis failed: ${(e as Error).message}`, tone: 'bad', emoji: '⚠️' });
+      } finally {
+        waiters.delete(id);
+        useQueue.setState(q => ({ current: null, batchDone: q.batchDone + 1 }));
       }
     }
   } finally {
@@ -136,24 +204,21 @@ export async function getOrAnalyse(id: string): Promise<GameAnalysis> {
 
 /** Poll chess.com while the app is open; auto-review games as you finish them. */
 export function startAutoSync(): () => void {
-  let first = true;
+  installVisibility();
+  let stopped = false;
   const tick = async () => {
-    if (document.hidden && !first) return;
-    const fresh = await syncGames();
-    const st = useStore.getState();
-    if (st.settings.autoAnalyse && fresh.length) {
-      const toAnalyse = first ? fresh.slice(0, 3) : fresh;
-      if (!first)
-        emit({ type: 'toast', text: `New game found vs ${opponentOf(fresh[0]).username} — reviewing…`, emoji: '⚡', tone: 'info' });
-      for (const g of toAnalyse) void enqueueAnalysis(g.id);
-    }
-    first = false;
+    if (!stopped && !document.hidden) await syncGames();
   };
+  const unsubscribe = useStore.subscribe((state, previous) => {
+    if (state.username !== previous.username) void tick();
+  });
   void tick();
   const iv = setInterval(tick, 60_000);
   const vis = () => !document.hidden && void tick();
   document.addEventListener('visibilitychange', vis);
   return () => {
+    stopped = true;
+    unsubscribe();
     clearInterval(iv);
     document.removeEventListener('visibilitychange', vis);
   };

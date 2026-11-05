@@ -230,7 +230,7 @@ export function focusRecommendation(games: StoredGame[], analyses: GameAnalysis[
     const family = o.name.length <= 17 ? o.name : `${o.name.slice(0, 16).trimEnd()}…`;
     candidates.push({ weight: pointsLost, value: {
       kind: 'opening', motif: 'opening', openingKey: o.key, title: `Your ${family} is leaking points`,
-      reason: `Opening moves in ${o.name} cost ${pointsLost.toFixed(2)} expected points across ${o.games} games (score ${Math.round(o.scorePercent)}%). Review recurring positions to recover those points.`,
+      reason: `Opening moves in ${o.name} cost ${pointsLost.toFixed(2)} expected points across ${o.games} game${(o.games) === 1 ? '' : 's'} (score ${Math.round(o.scorePercent)}%). Review recurring positions to recover those points.`,
       drillIds: drills.filter(d => d.motifs.includes('opening') && openingByGame.get(d.gameId) === o.key).map(d => d.id),
     } });
   }
@@ -274,4 +274,131 @@ export function dueForecast(drills: Drill[], now: number): { dueNow: number; due
     dueTomorrow: future.filter(due => due >= +tomorrow && due < +end).length,
     nextDueAt: future.length ? future.reduce((earliest, due) => Math.min(earliest, due), Infinity) : null,
   };
+}
+
+export type PieceType = 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
+export interface PieceBlunders { piece: PieceType; name: string; blunders: number; percent: number }
+export interface Performance extends Results { accuracy: number | null; accuracyGames: number }
+export interface MotifComparison { motif: Motif; thisMonth: number; lastMonth: number; thisMonthPer100: number | null; lastMonthPer100: number | null }
+export interface InsightCard {
+  id: string; title: string; body: string;
+  metric?: { value: string; label: string; trend?: 'up' | 'down' | 'flat' };
+  cta?: { label: string; href: string }; severity: 'win' | 'warn' | 'info';
+}
+const pieceNames: Record<PieceType, string> = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+
+/** Piece making the blunder, not necessarily the piece subsequently lost. Invalid positions are omitted. */
+export function blundersByPiece(games: StoredGame[], analyses: GameAnalysis[]): PieceBlunders[] {
+  const counts = new Map<PieceType, number>();
+  for (const { m } of userMoves(games, analyses)) if (m.cls === 'blunder') {
+    try {
+      const piece = new Chess(m.fenBefore).get(m.from as Parameters<Chess['get']>[0]);
+      if (piece?.color === m.color) counts.set(piece.type, (counts.get(piece.type) ?? 0) + 1);
+    } catch { /* No trustworthy piece attribution for an invalid position. */ }
+  }
+  const total = [...counts.values()].reduce((s, n) => s + n, 0);
+  return [...counts].map(([piece, blunders]) => ({ piece, name: pieceNames[piece], blunders, percent: 100 * blunders / total }))
+    .sort((a, b) => b.blunders - a.blunders || a.name.localeCompare(b.name));
+}
+
+/** Calendar months in UTC, comparing month-to-date with the complete previous month; rates use user moves. */
+export function motifBreakdown(games: StoredGame[], analyses: GameAnalysis[], now: number): MotifComparison[] {
+  const date = new Date(now), start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  const previous = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1);
+  const moves = userMoves(games.filter(g => g.endTime >= previous && g.endTime <= now), analyses);
+  const current = moves.filter(({ g }) => g.endTime >= start), last = moves.filter(({ g }) => g.endTime < start);
+  const motifs = [...new Set(moves.flatMap(({ m }) => m.motifs))].sort();
+  return motifs.map(motif => {
+    const thisMonth = current.filter(({ m }) => m.motifs.includes(motif)).length;
+    const lastMonth = last.filter(({ m }) => m.motifs.includes(motif)).length;
+    return { motif, thisMonth, lastMonth, thisMonthPer100: percent(thisMonth, current.length), lastMonthPer100: percent(lastMonth, last.length) };
+  });
+}
+function performance(games: StoredGame[], analyses: GameAnalysis[]): Performance {
+  const values = accuracyTrend(games, analyses).map(p => p.value);
+  return { ...results(games), accuracy: average(values), accuracyGames: values.length };
+}
+/** Similar means within 100 rating points, inclusively. Missing ratings are excluded. */
+export function performanceByRatingBand(games: StoredGame[], analyses: GameAnalysis[] = []): Record<'lower' | 'similar' | 'higher', Performance> {
+  const buckets: Record<'lower' | 'similar' | 'higher', StoredGame[]> = { lower: [], similar: [], higher: [] };
+  for (const g of games) {
+    const own = selfOf(g).rating, other = (g.userColor === 'w' ? g.black : g.white).rating;
+    if (!finite(own) || !finite(other)) continue;
+    const difference = other - own;
+    buckets[difference < -100 ? 'lower' : difference > 100 ? 'higher' : 'similar'].push(g);
+  }
+  return { lower: performance(buckets.lower, analyses), similar: performance(buckets.similar, analyses), higher: performance(buckets.higher, analyses) };
+}
+/** Immediate next chronological game, across all time controls; draws do not start either cohort. */
+export function tiltDetection(games: StoredGame[], analyses: GameAnalysis[] = []) {
+  const ordered = [...games].sort((a, b) => a.endTime - b.endTime || a.id.localeCompare(b.id));
+  const afterLoss: StoredGame[] = [], afterWin: StoredGame[] = [];
+  for (let i = 1; i < ordered.length; i++) {
+    if (ordered[i - 1].userResult === 'loss') afterLoss.push(ordered[i]);
+    if (ordered[i - 1].userResult === 'win') afterWin.push(ordered[i]);
+  }
+  const loss = performance(afterLoss, analyses), win = performance(afterWin, analyses);
+  return { afterLoss: loss, afterWin: win, accuracyDelta: loss.accuracy !== null && win.accuracy !== null ? loss.accuracy - win.accuracy : null,
+    scoreDelta: loss.games && win.games ? loss.scorePercent - win.scorePercent : null };
+}
+/** Local hours (0–23): the player's own clock is what matters for habits. */
+export function performanceByTimeOfDay(games: StoredGame[], analyses: GameAnalysis[] = []): (Performance & { hour: number })[] {
+  return Array.from({ length: 24 }, (_, hour) => ({ hour, ...performance(games.filter(g => new Date(g.endTime).getHours() === hour), analyses) }));
+}
+/** Local weekday, Sunday = 0. */
+export function performanceByDayOfWeek(games: StoredGame[], analyses: GameAnalysis[] = []): (Performance & { day: number; name: string })[] {
+  return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((name, day) => ({ day, name,
+    ...performance(games.filter(g => new Date(g.endTime).getDay() === day), analyses) }));
+}
+/** Exact control and class are kept separate (e.g. 300 and 300+5). */
+export function performanceByTimeControl(games: StoredGame[], analyses: GameAnalysis[] = []): (Performance & { timeControl: string; timeClass: string })[] {
+  const buckets = new Map<string, StoredGame[]>();
+  for (const g of games) { const key = JSON.stringify([g.timeClass, g.timeControl]); buckets.set(key, [...(buckets.get(key) ?? []), g]); }
+  return [...buckets].sort(([a], [b]) => a.localeCompare(b)).map(([, xs]) => ({ timeControl: xs[0].timeControl, timeClass: xs[0].timeClass, ...performance(xs, analyses) }));
+}
+/** Before includes both sides' move 30 (plies 59–60); after starts at move 31. Move-weighted accuracy. */
+export function accuracyAfterMove30(games: StoredGame[], analyses: GameAnalysis[]) {
+  const moves = userMoves(games, analyses).map(({ m }) => m).filter(m => finite(m.accuracy));
+  const beforeValues = moves.filter(m => m.ply <= 60).map(m => m.accuracy), afterValues = moves.filter(m => m.ply > 60).map(m => m.accuracy);
+  const before = { moves: beforeValues.length, average: average(beforeValues) }, after = { moves: afterValues.length, average: average(afterValues) };
+  return { before, after, delta: before.average !== null && after.average !== null ? after.average - before.average : null };
+}
+/** Monday-based UTC week to date. Ranked by known user accuracy, then game id. */
+export function bestWorstGameThisWeek(games: StoredGame[], analyses: GameAnalysis[], now: number) {
+  const start = weeklySummary([], [], now).start;
+  const points = accuracyTrend(games.filter(g => g.endTime >= start && g.endTime <= now), analyses)
+    .sort((a, b) => b.value - a.value || a.gameId.localeCompare(b.gameId));
+  return { best: points[0] ?? null, worst: points[points.length - 1] ?? null };
+}
+
+/** Ranked measured findings first; sparse histories receive factual coverage cards, never invented comparisons. */
+export function insightCards(games: StoredGame[], analyses: GameAnalysis[], drills: Drill[], now: number): InsightCard[] {
+  const past = games.filter(g => g.endTime <= now), candidates: { rank: number; card: InsightCard }[] = [];
+  const add = (rank: number, card: InsightCard) => candidates.push({ rank, card });
+  const round = (n: number) => Number(n.toFixed(1)).toString();
+  const tilt = tiltDetection(past, analyses);
+  if (tilt.accuracyDelta !== null) add(100, { id: 'tilt', title: 'Your game after a loss', severity: tilt.accuracyDelta < 0 ? 'warn' : 'win',
+    body: `After a loss your accuracy averages ${round(tilt.afterLoss.accuracy!)} across ${tilt.afterLoss.accuracyGames} game${(tilt.afterLoss.accuracyGames) === 1 ? '' : 's'}, versus ${round(tilt.afterWin.accuracy!)} across ${tilt.afterWin.accuracyGames} game${tilt.afterWin.accuracyGames === 1 ? '' : 's'} after a win.${tilt.accuracyDelta < 0 ? ` That is ${round(-tilt.accuracyDelta)} points lower; try a 5-minute break before the next game.` : ''}` });
+  const pieces = blundersByPiece(past, analyses), errors = errorRates(past, analyses);
+  if (pieces.length) add(95, { id: 'piece-blunders', title: `Check your ${pieces[0].name} moves`, severity: 'warn', body: `${pieces[0].blunders} of your ${errors.blunders} blunders were moves with your ${pieces[0].name}${pieces.length > 1 && pieces[0].blunders === pieces[1].blunders ? ', tied for the most' : ', the most of any piece'}. Check what your opponent can capture before moving it.` });
+  const late = accuracyAfterMove30(past, analyses);
+  if (late.delta !== null) add(90, { id: 'late-accuracy', title: 'Keep your focus after move 30', severity: late.delta < 0 ? 'warn' : 'win', body: `Your accuracy is ${round(late.before.average!)} through move 30 (${late.before.moves} moves) and ${round(late.after.average!)} afterwards (${late.after.moves} moves).`, metric: { value: round(late.delta), label: 'accuracy point change', trend: late.delta > 0 ? 'up' : late.delta < 0 ? 'down' : 'flat' } });
+  for (const row of motifBreakdown(past, analyses, now).sort((a, b) => b.thisMonth - a.thisMonth).slice(0, 1)) add(85, { id: 'motif-month', title: 'Your recurring pattern', severity: 'info', body: `${({ 'hung-piece': 'Leaving a piece available to capture', 'allowed-mate': 'Allowing checkmate', 'missed-mate': 'Missing checkmate', 'missed-win': 'Missing a winning opportunity', 'missed-fork': 'Missing a fork', 'time-trouble': 'Time pressure', opening: 'An opening issue', endgame: 'An endgame issue', positional: 'A positional issue' } satisfies Record<Motif, string>)[row.motif]} appeared on ${row.thisMonth} moves this month so far and ${row.lastMonth} last month.${row.thisMonthPer100 !== null && row.lastMonthPer100 !== null ? ` That is ${round(row.thisMonthPer100)} versus ${round(row.lastMonthPer100)} per 100 moves.` : ''}` });
+  const bands = performanceByRatingBand(past, analyses);
+  const band = (Object.keys(bands) as (keyof typeof bands)[]).filter(key => bands[key].games).sort((a, b) => bands[b].games - bands[a].games)[0];
+  if (band) add(70, { id: 'rating-band', title: `Against ${band}-rated opponents`, severity: 'info', body: `You scored ${round(bands[band].scorePercent)}% across ${bands[band].games} game${(bands[band].games) === 1 ? '' : 's'} against ${band}-rated opponents: ${bands[band].wins} wins, ${bands[band].draws} draws and ${bands[band].losses} losses. Similar means within 100 rating points.` });
+  const controls = performanceByTimeControl(past, analyses).sort((a, b) => b.games - a.games);
+  if (controls.length) add(65, { id: 'time-control', title: 'Your most-played time control', severity: 'info', body: `In ${controls[0].timeClass} with time-control setting ${controls[0].timeControl}, you scored ${round(controls[0].scorePercent)}% across ${controls[0].games} game${(controls[0].games) === 1 ? '' : 's'}.` });
+  const days = performanceByDayOfWeek(past, analyses).filter(d => d.games >= 3).sort((a, b) => b.scorePercent - a.scorePercent || b.games - a.games);
+  if (days.length) add(60, { id: 'weekday', title: `Your ${days[0].name} results`, severity: 'info', body: `On ${days[0].name}s, you scored ${round(days[0].scorePercent)}% across ${days[0].games} game${(days[0].games) === 1 ? '' : 's'}.` });
+  const hours = performanceByTimeOfDay(past, analyses).filter(h => h.games >= 3).sort((a, b) => b.scorePercent - a.scorePercent || b.games - a.games);
+  if (hours.length) add(59, { id: 'hour', title: 'Your time-of-day results', severity: 'info', body: `Between ${hours[0].hour}:00 and ${hours[0].hour}:59, you scored ${round(hours[0].scorePercent)}% across ${hours[0].games} game${(hours[0].games) === 1 ? '' : 's'}.` });
+  const week = bestWorstGameThisWeek(past, analyses, now);
+  if (week.best) add(80, { id: 'week-games', title: 'Your best and worst games this week', severity: 'info', body: `Your best accuracy this week is ${round(week.best.value)}; your lowest is ${round(week.worst!.value)}${week.best.gameId === week.worst!.gameId ? ' (only one game has known accuracy)' : ''}.`, cta: { label: 'Review your lowest-accuracy game', href: `#/review/${encodeURIComponent(week.worst!.gameId)}` } });
+  const measured = pairs(past, analyses).length, attempts = drills.reduce((sum, d) => sum + Math.max(0, d.attempts), 0);
+  add(10, { id: 'coverage', title: 'Your analysis coverage', severity: 'info', body: `${measured} of your ${past.length} game${past.length === 1 ? '' : 's'} have engine analysis. Analyse more games to uncover recurring patterns.` });
+  add(9, { id: 'training', title: 'Your training practice', severity: 'info', body: `You have ${drills.length} practice positions and ${attempts} recorded attempts.` });
+  add(8, { id: 'results', title: 'Your results so far', severity: 'info', body: `${results(past).wins} wins, ${results(past).draws} draws and ${results(past).losses} losses across ${past.length} game${(past.length) === 1 ? '' : 's'}.` });
+  add(7, { id: 'errors', title: 'Your analysed moves', severity: 'info', body: `Across ${errors.moves} analysed moves, you made ${errors.blunders} blunders and ${errors.mistakes} mistakes.` });
+  return candidates.sort((a, b) => b.rank - a.rank || a.card.id.localeCompare(b.card.id)).slice(0, 8).map(c => c.card);
 }

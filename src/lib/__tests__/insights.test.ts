@@ -231,3 +231,58 @@ describe('recovery and due forecast', () => {
     expect(dueForecast([], now)).toEqual({ dueNow: 0, dueTomorrow: 0, nextDueAt: null });
   });
 });
+
+import { blundersByPiece, motifBreakdown, performanceByRatingBand, tiltDetection, performanceByTimeOfDay, performanceByDayOfWeek, performanceByTimeControl, accuracyAfterMove30, bestWorstGameThisWeek, insightCards } from '../insights';
+
+describe('X5 insight engine', () => {
+  it('handles empty input in every new analysis and provides four factual starter cards', () => {
+    expect(blundersByPiece([], [])).toEqual([]);
+    expect(motifBreakdown([], [], NOW)).toEqual([]);
+    expect(performanceByRatingBand([]).similar).toMatchObject({ games: 0, accuracy: null });
+    expect(tiltDetection([])).toMatchObject({ accuracyDelta: null, scoreDelta: null });
+    expect(performanceByTimeOfDay([])).toHaveLength(24);
+    expect(performanceByDayOfWeek([])).toHaveLength(7);
+    expect(performanceByTimeControl([])).toEqual([]);
+    expect(accuracyAfterMove30([], [])).toMatchObject({ before: { moves: 0, average: null }, after: { moves: 0, average: null }, delta: null });
+    expect(bestWorstGameThisWeek([], [], NOW)).toEqual({ best: null, worst: null });
+    expect(insightCards([], [], [], NOW)).toHaveLength(4);
+  });
+  it('attributes blunders to the moving piece, filters opponent moves and invalid positions', () => {
+    const a = analysis('g', [move(1, { from: 'g1', cls: 'blunder' }), move(3, { from: 'b1', cls: 'blunder' }), move(5, { cls: 'blunder' }), move(2, { cls: 'blunder' }), move(7, { fenBefore: 'bad', cls: 'blunder' })]);
+    expect(blundersByPiece([game()], [a])[0]).toMatchObject({ piece: 'n', name: 'knight', blunders: 2 });
+    expect(insightCards([game()], [a], [], NOW).find(c => c.id === 'piece-blunders')?.body).toContain('2 of your 4 blunders');
+  });
+  it('compares calendar months, deduplicates motifs per move, and reports exposure rates', () => {
+    const gs = [game('current'), game('previous', { endTime: Date.UTC(2026, 9, 31) }), game('future', { endTime: NOW + DAY })];
+    const as = [analysis('current', [move(1, { motifs: ['missed-fork', 'missed-fork'] }), move(3)]), analysis('previous', [move(1, { motifs: ['missed-fork'] })]), analysis('future', [move(1, { motifs: ['opening'] })])];
+    expect(motifBreakdown(gs, as, NOW)).toEqual([{ motif: 'missed-fork', thisMonth: 1, lastMonth: 1, thisMonthPer100: 50, lastMonthPer100: 100 }]);
+  });
+  it('uses rating boundaries and the user colour, and excludes unknown ratings', () => {
+    const gs = [game('same'), game('low', { black: { username: 'x', rating: 1099, result: '' } }), game('high', { userColor: 'b', white: { username: 'x', rating: 1401, result: '' } }), game('unknown', { white: { username: 'me', rating: NaN, result: '' } })];
+    const bands = performanceByRatingBand(gs);
+    expect([bands.lower.games, bands.similar.games, bands.higher.games]).toEqual([1, 1, 1]);
+  });
+  it('compares next games chronologically without bridging draws or missing accuracy', () => {
+    const gs = [game('d', { endTime: 4, userAccuracy: 74 }), game('a', { endTime: 1, userResult: 'win' }), game('c', { endTime: 3, userResult: 'loss' }), game('b', { endTime: 2, userResult: 'draw', userAccuracy: 80 })];
+    expect(tiltDetection(gs)).toMatchObject({ afterLoss: { games: 1, accuracy: 74 }, afterWin: { games: 1, accuracy: 80 }, accuracyDelta: -6 });
+    expect(gs[0].id).toBe('d');
+    expect(insightCards(gs, [], [], NOW)[0].body).toContain('6 points lower');
+  });
+  it('groups UTC days/hours and exact time controls and measures both colours around move 30', () => {
+    const gs = [game('a'), game('b', { timeControl: '300+5', userColor: 'b' })];
+    expect(performanceByTimeOfDay(gs)[12].games).toBe(2);
+    expect(performanceByDayOfWeek(gs)[4]).toMatchObject({ name: 'Thursday', games: 2 });
+    expect(performanceByTimeControl(gs)).toHaveLength(2);
+    const as = [analysis('a', [move(59, { accuracy: 90 }), move(61, { accuracy: 60 })]), analysis('b', [move(60, { accuracy: 70 }), move(62, { accuracy: 40 })])];
+    expect(accuracyAfterMove30(gs, as)).toEqual({ before: { moves: 2, average: 80 }, after: { moves: 2, average: 50 }, delta: -30 });
+  });
+  it('ranks weekly games using selected accuracy and excludes future/out-of-week games', () => {
+    const gs = [game('best', { userAccuracy: 95 }), game('worst', { userAccuracy: 0 }), game('future', { userAccuracy: 100, endTime: NOW + 1 }), game('old', { userAccuracy: 100, endTime: NOW - 7 * DAY })];
+    expect(bestWorstGameThisWeek(gs, [], NOW)).toMatchObject({ best: { gameId: 'best', value: 95 }, worst: { gameId: 'worst', value: 0 } });
+    const cards = insightCards(gs, [], [drill()], NOW);
+    expect(cards.length).toBeGreaterThanOrEqual(4);
+    expect(cards.length).toBeLessThanOrEqual(8);
+    expect(new Set(cards.map(c => c.id)).size).toBe(cards.length);
+    expect(JSON.stringify(cards)).not.toMatch(/NaN|Infinity/);
+  });
+});

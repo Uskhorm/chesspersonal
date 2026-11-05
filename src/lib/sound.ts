@@ -1,95 +1,112 @@
 import { useStore } from './store';
 
-/** All sounds are synthesised with WebAudio — no audio assets to download. */
+/** Asset-free, gently enveloped WebAudio effects. */
 let ctx: AudioContext | null = null;
-const ac = () => {
-  if (!ctx) ctx = new AudioContext();
-  if (ctx.state === 'suspended') ctx.resume();
-  return ctx;
-};
-const on = () => useStore.getState().settings.sound;
+let output: GainNode;
+let reverb: ConvolverNode;
+let volume = 0.6;
+export function setVolume(v: number): void {
+  if (Number.isFinite(v)) volume = Math.max(0, Math.min(1, v));
+}
+export function getVolume(): number { return volume; }
 
-function tone(freq: number, dur: number, opts: { type?: OscillatorType; gain?: number; when?: number; slide?: number } = {}) {
-  const c = ac();
-  const t = c.currentTime + (opts.when ?? 0);
-  const o = c.createOscillator();
-  const g = c.createGain();
-  o.type = opts.type ?? 'sine';
-  o.frequency.setValueAtTime(freq, t);
-  if (opts.slide) o.frequency.exponentialRampToValueAtTime(opts.slide, t + dur);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(opts.gain ?? 0.18, t + 0.01);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(c.destination);
-  o.start(t);
-  o.stop(t + dur + 0.02);
+function audio(): AudioContext | null {
+  if (!useStore.getState().settings.sound || volume === 0 || typeof window === 'undefined') return null;
+  const Audio = window.AudioContext;
+  if (!Audio) return null;
+  try {
+    if (!ctx || ctx.state === 'closed') {
+      ctx = new Audio();
+      output = ctx.createGain();
+      output.connect(ctx.destination);
+      reverb = ctx.createConvolver();
+      const impulse = ctx.createBuffer(2, Math.ceil(ctx.sampleRate * 0.28), ctx.sampleRate);
+      for (let channel = 0; channel < 2; channel++) {
+        const data = impulse.getChannelData(channel);
+        for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length) ** 4 * 0.22;
+      }
+      reverb.buffer = impulse;
+      const wet = ctx.createGain();
+      wet.gain.value = 0.12;
+      reverb.connect(wet).connect(output);
+    }
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+    const quiet = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    output.gain.setTargetAtTime(volume * (quiet ? 0.3 : 1), ctx.currentTime, 0.012);
+    return ctx;
+  } catch { return null; }
 }
 
-function knock(freq: number, gain = 0.5, dur = 0.07) {
-  const c = ac();
-  const t = c.currentTime;
-  const len = Math.floor(c.sampleRate * dur);
-  const buf = c.createBuffer(1, len, c.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 3;
-  const src = c.createBufferSource();
-  src.buffer = buf;
-  const f = c.createBiquadFilter();
-  f.type = 'bandpass';
-  f.frequency.value = freq;
-  f.Q.value = 2.5;
-  const g = c.createGain();
-  g.gain.value = gain;
-  src.connect(f).connect(g).connect(c.destination);
-  src.start(t);
+function tone(c: AudioContext, frequency: number, delay = 0, duration = 0.25, gain = 0.09, wet = true) {
+  const t = c.currentTime + delay;
+  const oscillator = c.createOscillator();
+  const envelope = c.createGain();
+  oscillator.type = 'sine';
+  oscillator.frequency.value = frequency;
+  envelope.gain.setValueAtTime(0, t);
+  envelope.gain.linearRampToValueAtTime(gain, t + 0.015);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+  envelope.gain.linearRampToValueAtTime(0, t + duration + 0.015);
+  oscillator.connect(envelope).connect(output);
+  if (wet) envelope.connect(reverb);
+  oscillator.onended = () => { oscillator.disconnect(); envelope.disconnect(); };
+  oscillator.start(t);
+  oscillator.stop(t + duration + 0.02);
 }
 
-const NOTES = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.5, 1567.98, 1760, 2093];
+function knock(c: AudioContext, deep = false, delay = 0) {
+  const t = c.currentTime + delay;
+  const noise = c.createBuffer(1, Math.ceil(c.sampleRate * 0.055), c.sampleRate);
+  const data = noise.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length) ** 3;
+  const source = c.createBufferSource();
+  source.buffer = noise;
+  const filter = c.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = deep ? 650 : 1100;
+  filter.Q.value = 0.8;
+  const envelope = c.createGain();
+  envelope.gain.setValueAtTime(0, t);
+  envelope.gain.linearRampToValueAtTime(0.3, t + 0.002);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+  source.connect(filter).connect(envelope).connect(output);
+  source.onended = () => { source.disconnect(); filter.disconnect(); envelope.disconnect(); };
+  source.start(t);
+  source.stop(t + 0.065);
+  tone(c, deep ? 145 : 205, delay, 0.085, deep ? 0.16 : 0.11, false);
+}
+
+function play(effect: (c: AudioContext) => void): void {
+  const c = audio();
+  if (c) effect(c);
+}
+function chime(notes: number[], base = 440, spacing = 0.065): void {
+  play(c => notes.forEach((note, i) => tone(c, base * 2 ** (note / 12), i * spacing, 0.3, 0.075 / Math.sqrt(notes.length))));
+}
 
 export const sfx = {
-  move: () => on() && knock(1400, 0.9),
-  capture: () => on() && (knock(700, 1.2, 0.1), knock(1800, 0.4)),
-  check: () => on() && (knock(1200, 0.9), tone(880, 0.12, { type: 'triangle', gain: 0.08 })),
-  click: () => on() && tone(1200, 0.05, { type: 'triangle', gain: 0.05, slide: 1600 }),
-  hover: () => on() && tone(2400, 0.02, { type: 'sine', gain: 0.015 }),
-  correct: () => {
-    if (!on()) return;
-    [0, 4, 7, 12].forEach((s, i) => tone(523.25 * 2 ** (s / 12), 0.22, { type: 'triangle', gain: 0.12, when: i * 0.06 }));
+  move: (): void => play(c => knock(c)),
+  capture: (): void => play(c => { knock(c, true); knock(c, true, 0.045); }),
+  check: (): void => play(c => { knock(c); tone(c, 660, 0.03, 0.18, 0.045); }),
+  castle: (): void => play(c => { knock(c); knock(c, true, 0.075); }),
+  promote: (): void => chime([0, 7, 12], 523.25),
+  notify: (): void => chime([0, 7], 440, 0.1),
+  click: (): void => play(c => tone(c, 600, 0, 0.055, 0.025, false)),
+  hover: (): void => {
+    if (typeof window !== 'undefined' && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      play(c => tone(c, 740, 0, 0.04, 0.008, false));
+    }
   },
-  /** Rising pitch with each combo step — a classic dopamine ladder. */
-  combo: (n: number) => {
-    if (!on()) return;
-    const f = NOTES[Math.min(n, NOTES.length - 1)];
-    tone(f, 0.18, { type: 'square', gain: 0.05 });
-    tone(f * 1.5, 0.25, { type: 'triangle', gain: 0.08, when: 0.05 });
+  correct: (): void => chime([0, 4, 7], 523.25),
+  combo: (n: number): void => {
+    const step = Number.isFinite(n) ? Math.max(0, Math.min(10, Math.floor(n))) : 0;
+    chime([0, 7], 440 * 2 ** (step / 12));
   },
-  wrong: () => {
-    if (!on()) return;
-    tone(220, 0.25, { type: 'sawtooth', gain: 0.06, slide: 110 });
-    tone(233, 0.25, { type: 'square', gain: 0.03, slide: 116 });
-  },
-  brilliant: () => {
-    if (!on()) return;
-    [0, 7, 12, 16, 19, 24].forEach((s, i) => tone(659.25 * 2 ** (s / 12), 0.5, { type: 'sine', gain: 0.1, when: i * 0.07 }));
-    tone(2637, 0.8, { type: 'sine', gain: 0.03, when: 0.4 });
-  },
-  great: () => {
-    if (!on()) return;
-    [0, 5, 9].forEach((s, i) => tone(587.33 * 2 ** (s / 12), 0.3, { type: 'triangle', gain: 0.1, when: i * 0.07 }));
-  },
-  blunder: () => {
-    if (!on()) return;
-    tone(300, 0.5, { type: 'sawtooth', gain: 0.05, slide: 80 });
-  },
-  levelUp: () => {
-    if (!on()) return;
-    [0, 4, 7, 12, 16, 19, 24].forEach((s, i) => tone(392 * 2 ** (s / 12), 0.35, { type: 'square', gain: 0.05, when: i * 0.08 }));
-    [12, 16, 19, 24].forEach((s) => tone(392 * 2 ** (s / 12), 1.2, { type: 'triangle', gain: 0.06, when: 0.6 }));
-  },
-  chest: () => {
-    if (!on()) return;
-    for (let i = 0; i < 12; i++) tone(400 + i * 90, 0.08, { type: 'square', gain: 0.03, when: i * 0.05 });
-    [0, 4, 7, 12].forEach((s) => tone(783.99 * 2 ** (s / 12), 1, { type: 'triangle', gain: 0.07, when: 0.65 }));
-  },
-  xp: () => on() && tone(1760, 0.08, { type: 'sine', gain: 0.05, slide: 2637 }),
+  wrong: (): void => chime([0, -3], 330, 0.09),
+  brilliant: (): void => chime([0, 7, 12, 16], 523.25),
+  great: (): void => chime([0, 4, 9], 440),
+  blunder: (): void => chime([0, -5], 261.63, 0.1),
+  levelUp: (): void => chime([0, 4, 7, 12, 16], 392),
+  chest: (): void => chime([0, 7, 4, 12], 440, 0.085),
+  xp: (): void => chime([0, 7], 660, 0.04),
 };

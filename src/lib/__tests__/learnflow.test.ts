@@ -198,7 +198,7 @@ describe('mocked worker verification', () => {
     const m = game().moves[0];
     vi.mocked(verifyMove).mockResolvedValue(wrong());
     const checked = await verifyLearnAttempt(m, 'e2e4');
-    expect(checked.feedback).toContain('e4 gives your opponent');
+    expect(checked.feedback.length).toBeGreaterThan(20); // concrete coaching (wording owned by coach.ts)
     expect(checked.feedback).not.toContain('Instead');
     expect(checked.feedback).not.toContain('d4');
   });

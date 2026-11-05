@@ -33,6 +33,13 @@ export async function api<T>(path: string, body?: unknown, method?: string): Pro
   } catch {
     throw new ApiError(response.status, 'unknown', 'Hindsight returned an unexpected response. Try again.');
   }
+  if (response.status === 401 && token && useAuth.getState().token === token) {
+    // The session was revoked or the account no longer exists: drop the token and stop syncing.
+    // Local progress is kept; the user can sign in again from the gate or Profile.
+    useAuth.setState({ token: null, user: null, status: 'signed-out' });
+    void import('./cloudsync').then((m) => m.stop()).catch(() => {});
+    void import('./bus').then(({ emit }) => emit({ type: 'toast', text: 'You were signed out. Sign in again to keep syncing.', tone: 'info' })).catch(() => {});
+  }
   if (!response.ok) {
     const error = data as { error?: string; message?: string } | null;
     throw new ApiError(response.status, error?.error ?? 'unknown', error?.message ?? 'Hindsight could not complete that move. Try again.');
