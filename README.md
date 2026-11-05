@@ -2,6 +2,8 @@
 
 # ChessPersonal
 
+**▶ Live: https://uskhorm.github.io/chesspersonal/**
+
 **An open-source, in-house version of chess game review — plus a training system built from your own mistakes.**
 
 Connect your chess.com username, and every game you finish is pulled in, analysed by Stockfish 19 in your browser, and broken down move by move into **Brilliant · Great · Best · Excellent · Good · Book · Inaccuracy · Mistake · Miss · Blunder**. Each mistake you make becomes a flashcard you drill on spaced repetition until you stop making it.
@@ -43,7 +45,9 @@ npm run dev
 Regenerate the opening book with `node scripts/build-openings.mjs`.
 
 ## Deploy
-It's a static site, so `npm run build` outputs `dist/`. The repo is configured for Vercel (`vercel.json`).
+It's a static site, so `npm run build` outputs `dist/`.
+- **GitHub Pages**: deployed automatically on every push to `master` (`.github/workflows/pages.yml`).
+- **Vercel**: `vercel.json` is included, so you can import the repo or run `vercel --prod`.
 
 ## Notes
 - Classifications follow the publicly described expected-points model, but the thresholds are this project's own, so results won't match chess.com exactly.
