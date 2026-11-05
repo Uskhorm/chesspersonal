@@ -1,3 +1,4 @@
+import { slimAnalysis } from '../db';
 import { Chess } from 'chess.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -316,4 +317,33 @@ describe('lineFor and repertoireSummary', () => {
     const empty = buildRepertoire([], []);
     expect(repertoireSummary(empty).b.firstOutOfBook).toBeNull();
   });
+});
+
+it('preserves repertoire, leaks and drills with compact analysis evidence', () => {
+  const games = [game('slim', ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'])];
+  const full = [analysed(games[0], { 1: badE4 })];
+  const rep = buildRepertoire(games, full, { lookup: noBook });
+  const compact = buildRepertoire(games, full.map(slimAnalysis), { lookup: noBook });
+  expect(compact).toEqual(rep);
+  expect(openingLeaks(compact)).toEqual(openingLeaks(rep));
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  expect(openingDrills(compact)).toEqual(openingDrills(rep));
+});
+
+it('measures a realistic 80-ply analysis payload', () => {
+  const chess = new Chess();
+  // Legal repeated knight manoeuvres give a reproducible long history.
+  for (let i = 0; i < 20; i++) for (const san of ['Nf3', 'Nf6', 'Ng1', 'Ng8']) chess.move(san);
+  const g = { ...game('size', []), pgn: chess.pgn() };
+  const full = analysed(g);
+  for (const m of full.moves) {
+    m.bestLineSan = ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6', 'O-O', 'Be7'];
+    m.replyLineSan = [...m.bestLineSan];
+    m.comment = 'This move gives up control of the centre and allows the opponent to develop with tempo. '.repeat(6);
+    m.clock = 300 - m.ply;
+  }
+  const bytes = (a: unknown) => new TextEncoder().encode(JSON.stringify(a)).length;
+  const original = bytes(full), compact = bytes(slimAnalysis(full));
+  console.log('Analysis JSON bytes:', { full: original, slim: compact, reduction: (100 * (1 - compact / original)).toFixed(1) + '%' });
+  expect(compact).toBeLessThan(original / 2);
 });

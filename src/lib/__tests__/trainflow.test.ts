@@ -253,3 +253,25 @@ describe('Lichess queue', () => {
     await prefetchPuzzles('test-error', 'hardest');
   });
 });
+
+
+it.each(['puzzle', 'drill'] as const)('retains all %s hint squares as hints become more specific', kind => {
+  const own: TrainItem = kind === 'puzzle' ? item : { kind: 'drill', drill: {
+    id: 'hints', color: 'w', fen: new Chess().fen(), bestUci: 'e2e3', bestSan: 'e3', playedSan: 'a3', motifs: [],
+  } as unknown as import('../types').Drill };
+  const destination = kind === 'puzzle' ? 'e4' : 'e3';
+  let s = createTrainState('session', [own]);
+  const expected = new Set<string>();
+  for (let level = 1; level <= 3; level++) {
+    s = trainReducer(s, { type: 'hint' });
+    hook.state = s;
+    const view = useTrainSession('session', { items: [own] });
+    expect(view.hint?.highlight?.squares).toContain('e2');
+    view.hint?.highlight?.squares?.forEach(sq => expected.add(sq));
+    expect(view.board.highlights).toEqual([...expected]);
+    if (level === 1) expect(view.hint?.highlight?.squares).toEqual(['e2']);
+    if (level === 2 && kind === 'puzzle') expect(view.hint?.highlight?.squares).toEqual(expect.arrayContaining(['e4', 'd3', 'f5']));
+    if (level === 3) expect(view.hint?.highlight?.squares).toEqual(['e2', destination]);
+    expect(view.board.arrows).toEqual(level === 3 ? [{ from: 'e2', to: destination, brush: 'hint' }] : []);
+  }
+});

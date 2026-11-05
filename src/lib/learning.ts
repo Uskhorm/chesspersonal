@@ -1,5 +1,6 @@
+import { type SlimAnalysis } from './db';
 import { MOTIF_INFO } from './classify';
-import type { Drill, GameAnalysis, Motif, StoredGame } from './types';
+import type { Drill, Motif, StoredGame } from './types';
 import { isNewCard, retrievability, type FsrsDrill } from './srs';
 
 export interface Leak {
@@ -18,7 +19,7 @@ export interface Leak {
  * The "Elo leak" report: where your expected points actually go.
  * Deliberate practice works best when aimed at your single biggest weakness.
  */
-export function computeLeaks(games: StoredGame[], analyses: GameAnalysis[]): Leak[] {
+export function computeLeaks(games: StoredGame[], analyses: SlimAnalysis[]): Leak[] {
   const byId = new Map(games.map((g) => [g.id, g]));
   const tally = new Map<Motif, { count: number; loss: number }>();
   let total = 0;

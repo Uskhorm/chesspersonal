@@ -1,3 +1,4 @@
+import { useIdleInput, useSlimAnalyses } from '../lib/queries';
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -31,18 +32,24 @@ const SEV = {
 
 export function Insights() {
   const games = useLiveQuery(() => db.games.toArray(), []);
-  const analyses = useLiveQuery(() => db.analyses.toArray(), []);
+  const analyses = useSlimAnalyses();
   const drills = useLiveQuery(() => db.drills.toArray(), []);
   const [rep, setRep] = useState<Repertoire | null>(null);
   const [tc, setTc] = useState<string | null>(null);
 
+  const input = useMemo(() => ({ games, analyses, drills }), [games, analyses, drills]);
+  const idle = useIdleInput(input);
   useEffect(() => {
-    if (!games?.length || !analyses) return;
-    buildRepertoireAsync(games, analyses).then(setRep).catch(() => setRep(null));
-  }, [games?.length, analyses?.length]);
+    let active = true;
+    setRep(null);
+    if (!idle?.games?.length || !idle.analyses) return;
+    buildRepertoireAsync(idle.games, idle.analyses).then(value => { if (active) setRep(value); }).catch(() => { if (active) setRep(null); });
+    return () => { active = false; };
+  }, [idle]);
 
   const data = useMemo(() => {
-    if (!games?.length || !analyses || !drills) return null;
+    if (!idle?.games?.length || !idle.analyses || !idle.drills) return null;
+    const { games, analyses, drills } = idle;
     const now = Date.now();
     return {
       cards: insightCards(games, analyses, drills, now),
@@ -53,14 +60,14 @@ export function Insights() {
       pieces: blundersByPiece(games, analyses).filter((p) => p.blunders > 0),
       swings: biggestSwings(games, analyses, 5),
     };
-  }, [games, analyses, drills]);
+  }, [idle]);
 
   const leaks = useMemo(() => (rep ? openingLeaks(rep).slice(0, 5) : []), [rep]);
   const summary = useMemo(() => (rep ? repertoireSummary(rep) : null), [rep]);
   const gameById = useMemo(() => new Map((games ?? []).map((g) => [g.id, g])), [games]);
   const analysisById = useMemo(() => new Map((analyses ?? []).map((a) => [a.gameId, a])), [analyses]);
 
-  if (!games || !analyses || !drills) return <PageSkeleton />;
+  if (!idle || !games || !analyses || !drills) return <PageSkeleton />;
   if (!data) {
     return (
       <div className="page narrow">

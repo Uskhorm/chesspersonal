@@ -116,7 +116,7 @@ describe('human coaching from legal engine lines', () => {
       expect(first[2].highlight?.arrow).toEqual([m.bestUci.slice(0, 2), m.bestUci.slice(2, 4)]);
       for (const hint of first) for (const san of m.bestLineSan) expect(hint.text).not.toContain(san);
     }
-    expect(hints(queen())[1].text).toBe('Take the rook on d8 with check.');
+    expect(hints(queen())[1].text).toBe('Consider your highlighted queen. Take the rook on d8 with check.');
   });
 
   it('derives transferable rules from the tactic', () => {
@@ -160,7 +160,7 @@ describe('human coaching from legal engine lines', () => {
     const hs = hints(m);
     expect(hs[0].text).toBe('Look at your bishop on a6.');
     expect(hs[0].highlight?.squares).toEqual(['a6']);
-    expect(hs[1].text).toBe('Take the bishop on b5 first, so a later queen check can fork the king on e1 and queen on c2.');
+    expect(hs[1].text).toBe('Consider your highlighted bishop. Take the bishop on b5 first, so a later queen check can fork the king on e1 and queen on c2.');
     expect(hs[1].text).not.toContain('it was guarding the e4 square');
     expect(hs[1].text).not.toMatch(/Look for a check|Give check|Check their king|Bxb5|Qe4/);
     expect(hs[2].highlight?.arrow).toEqual(['a6', 'b5']);
@@ -213,5 +213,25 @@ describe('position features and quiet-move reasoning', () => {
     expect(f.pawns.doubled).toEqual(['a3', 'a2']);
     expect(f.pawns.isolated).toEqual(['c4', 'a3', 'a2']);
     expect(f.pawns.passed).not.toContain('c4');
+  });
+});
+
+
+describe('progressive board hints', () => {
+  it.each([
+    ['quiet', () => fixture(new Chess().fen(), 'e4', ['Nf3'])],
+    ['capture', queen], ['check', mate], ['fork', fork],
+    ['en passant', () => fixture('4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1', 'Kf1', ['exd6'])],
+  ])('highlights every level for %s', (_, make) => {
+    const m = make(), hs = hints(m), from = m.bestUci.slice(0, 2), to = m.bestUci.slice(2, 4);
+    for (const h of hs) expect(h.highlight?.squares).toContain(from);
+    expect(hs[0].highlight?.squares).toEqual([from]);
+    expect(hs[1].text).toContain('highlighted');
+    for (const square of hs[1].text.match(/\b[a-h][1-8]\b/g) ?? []) expect(hs[1].highlight?.squares).toContain(square);
+    expect(hs[2].highlight).toEqual({ squares: [from, to], arrow: [from, to] });
+  });
+  it('lights both fork targets and the en passant victim', () => {
+    expect(hints(fork())[1].highlight?.squares).toEqual(expect.arrayContaining(['b5', 'e8', 'a8']));
+    expect(hints(fixture('4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1', 'Kf1', ['exd6']))[1].highlight?.squares).toContain('d5');
   });
 });

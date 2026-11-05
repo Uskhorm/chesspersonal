@@ -6,7 +6,7 @@ import { db } from '../lib/db';
 import { useStore } from '../lib/store';
 import { computeLeaks } from '../lib/learning';
 import { syncGames, useQueue } from '../lib/sync';
-import { useDrillStats, useRecentGames, useSummaries, useTodayActivity } from '../lib/queries';
+import { useIdleInput, useSlimAnalyses, useDrillStats, useRecentGames, useSummaries, useTodayActivity } from '../lib/queries';
 import { recovery } from '../lib/insights';
 import type { FsrsDrill } from '../lib/srs';
 import { Board } from '../components/Board';
@@ -32,10 +32,12 @@ export function Home() {
   const focus = useLiveQuery(() => db.drills.where('due').below(Date.now()).sortBy('due').then((d) => d[0]), [stats.due]);
   // Habits from your recent reviewed games only; never loads every analysis on this page.
   const analysedIds = useMemo(() => games.filter((g) => g.analysed).slice(0, 20).map((g) => g.id), [games]);
-  const recentAnalyses = useLiveQuery(() => db.analyses.where('gameId').anyOf(analysedIds).toArray(), [analysedIds.join()]);
-  const leaks = useMemo(() => (recentAnalyses ? computeLeaks(games, recentAnalyses).filter((l) => l.motif !== 'opening' && l.motif !== 'endgame') : null), [games, recentAnalyses]);
+  const recentAnalyses = useSlimAnalyses(analysedIds);
   const drills = useLiveQuery(() => db.drills.toArray(), [stats.total]);
-  const rec = useMemo(() => (drills && recentAnalyses ? recovery(drills as FsrsDrill[], recentAnalyses) : null), [drills, recentAnalyses]);
+  const input = useMemo(() => ({ games, recentAnalyses, drills }), [games, recentAnalyses, drills]);
+  const idle = useIdleInput(input);
+  const leaks = useMemo(() => (idle?.recentAnalyses ? computeLeaks(idle.games, idle.recentAnalyses).filter((l) => l.motif !== 'opening' && l.motif !== 'endgame') : null), [idle]);
+  const rec = useMemo(() => (idle?.drills && idle.recentAnalyses ? recovery(idle.drills as FsrsDrill[], idle.recentAnalyses) : null), [idle]);
   const syncing = useQueue((s) => s.syncing);
   const syncErr = useQueue((s) => s.error);
   const q = useQueue();

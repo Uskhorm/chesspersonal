@@ -223,7 +223,7 @@ export function useLearnFlow(analysis: GameAnalysis, userColor: Color, options: 
   } else if (p && state.phase === 'solved' && p.attemptFen) {
     fen = p.attemptFen; lastMove = p.lastMove;
   } else if (hint && ['solve', 'wrong'].includes(state.phase)) {
-    highlights = hint.highlight?.squares ?? [];
+    highlights = [...new Set(hintList.slice(0, p?.hintsUsed ?? 0).flatMap(h => h.highlight?.squares ?? []))];
     if (hint.highlight?.arrow) arrows.push({ from: hint.highlight.arrow[0], to: hint.highlight.arrow[1], brush: 'hint' });
   }
   if (!state.browsingContext && m && ['explain', 'solved'].includes(state.phase)) {

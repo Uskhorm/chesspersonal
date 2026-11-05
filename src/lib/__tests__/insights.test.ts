@@ -1,3 +1,5 @@
+import { slimAnalysis } from '../db';
+import { computeLeaks } from '../learning';
 import { describe, expect, it } from 'vitest';
 import type { FsrsDrill } from '../srs';
 import { Chess } from 'chess.js';
@@ -195,7 +197,7 @@ describe('weekly comparisons, recommendations and progress', () => {
     expect(result.title.length).toBeLessThanOrEqual(40);
     expect(result.reason).toContain(name);
   });
-  it('scores improvement, decline, neutral performance and training within 0–100', () => {
+  it('scores improvement, decline, neutral performance and training within 0â€“100', () => {
     const games = [game('new'), game('old', { endTime: NOW - 7 * DAY })];
     const improving = [analysis('new', [move()], { white: summary(90) }), analysis('old', [move(1, { cls: 'blunder' })], { white: summary(60) })];
     expect(progressScore(games, improving, [], NOW)).toBe(100);
@@ -285,4 +287,14 @@ describe('X5 insight engine', () => {
     expect(new Set(cards.map(c => c.id)).size).toBe(cards.length);
     expect(JSON.stringify(cards)).not.toMatch(/NaN|Infinity/);
   });
+});
+
+it('preserves insight cards and leaks with slim snapshots', () => {
+  const games = [game()];
+  const full = [analysis('g', [move(1, { cls: 'blunder', epLoss: .4, motifs: ['hung-piece'], winAfter: 10 }), move(31, { fenBefore: ENDGAME, cls: 'mistake', epLoss: .2, motifs: ['endgame'], clock: 2 })])];
+  const slim = full.map(slimAnalysis);
+  expect(insightCards(games, slim, [drill()], NOW)).toEqual(insightCards(games, full, [drill()], NOW));
+  expect(computeLeaks(games, slim)).toEqual(computeLeaks(games, full));
+  expect(accuracyByPhase(games, slim)).toEqual(accuracyByPhase(games, full));
+  expect(clockUsage(games, slim)).toEqual(clockUsage(games, full));
 });

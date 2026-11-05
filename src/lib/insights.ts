@@ -1,10 +1,11 @@
+import { type SlimAnalysis, type SlimMove } from './db';
 import { Chess } from 'chess.js';
 import { initialClock, parseClocks } from './analysis';
 import { selfOf } from './chesscom';
 import { isEndgame } from './classify';
 import { computeLeaks } from './learning';
 import { isMastered, type FsrsDrill } from './srs';
-import type { AnalysedMove, Color, Drill, GameAnalysis, Motif, StoredGame } from './types';
+import type { AnalysedMove, Color, Drill, Motif, StoredGame } from './types';
 
 export type Phase = 'opening' | 'middlegame' | 'endgame';
 export interface TrendPoint { gameId: string; time: number; value: number }
@@ -36,7 +37,7 @@ const finite = (n: number | undefined): n is number => n !== undefined && Number
 const average = (xs: number[]): number | null => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
 const percent = (n: number, d: number): number | null => d ? 100 * n / d : null;
 const clamp = (n: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, n));
-const isError = (m: AnalysedMove) => m.cls === 'mistake' || m.cls === 'blunder';
+const isError = (m: SlimMove) => m.cls === 'mistake' || m.cls === 'blunder';
 const phaseOf = (m: Pick<AnalysedMove, 'ply' | 'fenBefore'>): Phase => isEndgame(m.fenBefore) ? 'endgame' : m.ply <= 20 ? 'opening' : 'middlegame';
 const phaseValues = (): Record<Phase, number[]> => ({ opening: [], middlegame: [], endgame: [] });
 const phaseAverages = (xs: Record<Phase, number[]>): Record<Phase, PhaseAverage> => ({
@@ -45,15 +46,15 @@ const phaseAverages = (xs: Record<Phase, number[]>): Record<Phase, PhaseAverage>
   endgame: { moves: xs.endgame.length, average: average(xs.endgame) },
 });
 // Select one (deepest, then newest) analysis per game; orphan analyses never count.
-function pairs(games: StoredGame[], analyses: GameAnalysis[]) {
-  const byId = new Map<string, GameAnalysis>();
+function pairs(games: StoredGame[], analyses: SlimAnalysis[]) {
+  const byId = new Map<string, SlimAnalysis>();
   for (const a of analyses) {
     const old = byId.get(a.gameId);
     if (!old || a.depth > old.depth || (a.depth === old.depth && a.createdAt > old.createdAt)) byId.set(a.gameId, a);
   }
   return games.flatMap(g => { const a = byId.get(g.id); return a ? [{ g, a }] : []; });
 }
-function userMoves(games: StoredGame[], analyses: GameAnalysis[]) {
+function userMoves(games: StoredGame[], analyses: SlimAnalysis[]) {
   return pairs(games, analyses).flatMap(({ g, a }) => a.moves.filter(m => m.color === g.userColor).map(m => ({ g, m })));
 }
 
@@ -76,7 +77,7 @@ export function ratingTrend(games: StoredGame[], now: number): RatingTrend[] {
 }
 
 /** Rolling arithmetic mean over the last `window` games with known accuracy; analysis takes precedence over stored/provider accuracy. */
-export function accuracyTrend(games: StoredGame[], analyses: GameAnalysis[], window = 5): AccuracyPoint[] {
+export function accuracyTrend(games: StoredGame[], analyses: SlimAnalysis[], window = 5): AccuracyPoint[] {
   const byId = new Map(pairs(games, analyses).map(({ g, a }) => [g.id, g.userColor === 'w' ? a.white.accuracy : a.black.accuracy]));
   const points = games.flatMap(g => {
     const value = byId.get(g.id) ?? g.userAccuracy ?? g.chesscomAccuracy?.[g.userColor === 'w' ? 'white' : 'black'];
@@ -101,7 +102,7 @@ function headers(pgn: string): Record<string, string> {
   return Object.fromEntries([...pgn.matchAll(/\[(\w+)\s+"((?:\\.|[^"\\])*)"\]/g)].map(m => [m[1], m[2].replace(/\\(["\\])/g, '$1')]));
 }
 /** ECO family is the two-character decade (e.g. B20–B29 => B2), combined with the opening name (variations after ':' are folded). */
-export function resultsByOpening(games: StoredGame[], analyses: GameAnalysis[]): OpeningResults[] {
+export function resultsByOpening(games: StoredGame[], analyses: SlimAnalysis[]): OpeningResults[] {
   const byId = new Map(pairs(games, analyses).map(({ g, a }) => [g.id, a]));
   const buckets = new Map<string, { ecoFamily: string; name: string; games: StoredGame[] }>();
   for (const g of games) {
@@ -118,13 +119,13 @@ export function resultsByOpening(games: StoredGame[], analyses: GameAnalysis[]):
   }
   return [...buckets].map(([key, b]) => ({ key, ecoFamily: b.ecoFamily, name: b.name, ...results(b.games) })).sort((a, b) => b.games - a.games || a.key.localeCompare(b.key));
 }
-export function bestWorstOpenings(games: StoredGame[], analyses: GameAnalysis[], minSample = 3): { best: OpeningResults | null; worst: OpeningResults | null } {
+export function bestWorstOpenings(games: StoredGame[], analyses: SlimAnalysis[], minSample = 3): { best: OpeningResults | null; worst: OpeningResults | null } {
   const xs = resultsByOpening(games, analyses).filter(x => x.games >= Math.max(1, minSample)).sort((a, b) => b.scorePercent - a.scorePercent || b.games - a.games || a.key.localeCompare(b.key));
   return { best: xs[0] ?? null, worst: xs[xs.length - 1] ?? null };
 }
 
 /** Uses same-side clock differences plus Fischer increment. Unknown/missing annotations break the duration chain; daily/staged controls are excluded. */
-export function clockUsage(games: StoredGame[], analyses: GameAnalysis[]): ClockUsage {
+export function clockUsage(games: StoredGame[], analyses: SlimAnalysis[]): ClockUsage {
   const values = phaseValues();
   let errors = 0, errorsWithClock = 0, errorsWithDuration = 0, timeTroubleErrors = 0, rushedErrors = 0;
   let timeTroublePointsLost = 0, rushingPointsLost = 0;
@@ -151,7 +152,7 @@ export function clockUsage(games: StoredGame[], analyses: GameAnalysis[]): Clock
       const duration = finite(elapsed) && elapsed >= 0 ? elapsed : undefined;
       if (m.color === g.userColor) {
         if (finite(duration)) values[phaseOf(m)].push(duration);
-        const error = 'cls' in m && isError(m as AnalysedMove);
+        const error = 'cls' in m && isError(m as SlimMove);
         if (error) {
           errors++;
           const loss = 'epLoss' in m && finite(m.epLoss as number) ? Math.max(0, m.epLoss as number) : 0;
@@ -165,7 +166,7 @@ export function clockUsage(games: StoredGame[], analyses: GameAnalysis[]): Clock
   return { byPhase: phaseAverages(values), errors, errorsWithClock, errorsWithDuration, timeTroubleErrors, timeTroublePercent: percent(timeTroubleErrors, errorsWithClock), rushedErrors, rushingPercent: percent(rushedErrors, errorsWithDuration), timeTroublePointsLost, rushingPointsLost };
 }
 
-function opportunityRate(games: StoredGame[], analyses: GameAnalysis[], comeback: boolean): OpportunityRate {
+function opportunityRate(games: StoredGame[], analyses: SlimAnalysis[], comeback: boolean): OpportunityRate {
   let opportunities = 0, successes = 0;
   for (const { g, a } of pairs(games, analyses)) {
     const curve = a.winCurve.filter(finite).map(w => g.userColor === 'w' ? w : 100 - w);
@@ -177,25 +178,25 @@ function opportunityRate(games: StoredGame[], analyses: GameAnalysis[], comeback
   }
   return { opportunities, successes, percent: percent(successes, opportunities) };
 }
-export function conversionRate(games: StoredGame[], analyses: GameAnalysis[]): OpportunityRate { return opportunityRate(games, analyses, false); }
-export function comebackRate(games: StoredGame[], analyses: GameAnalysis[]): OpportunityRate { return opportunityRate(games, analyses, true); }
-export function errorRates(games: StoredGame[], analyses: GameAnalysis[]): ErrorRates {
+export function conversionRate(games: StoredGame[], analyses: SlimAnalysis[]): OpportunityRate { return opportunityRate(games, analyses, false); }
+export function comebackRate(games: StoredGame[], analyses: SlimAnalysis[]): OpportunityRate { return opportunityRate(games, analyses, true); }
+export function errorRates(games: StoredGame[], analyses: SlimAnalysis[]): ErrorRates {
   const xs = userMoves(games, analyses), blunders = xs.filter(({ m }) => m.cls === 'blunder').length, mistakes = xs.filter(({ m }) => m.cls === 'mistake').length;
   return { moves: xs.length, blunders, mistakes, blundersPer100: percent(blunders, xs.length) ?? 0, mistakesPer100: percent(mistakes, xs.length) ?? 0 };
 }
 /** Move-weighted phase accuracy, matching analysis.ts phase boundaries. */
-export function accuracyByPhase(games: StoredGame[], analyses: GameAnalysis[]): Record<Phase, PhaseAverage> {
+export function accuracyByPhase(games: StoredGame[], analyses: SlimAnalysis[]): Record<Phase, PhaseAverage> {
   const values = phaseValues();
   for (const { m } of userMoves(games, analyses)) if (finite(m.accuracy)) values[phaseOf(m)].push(m.accuracy);
   return phaseAverages(values);
 }
-export function biggestSwings(games: StoredGame[], analyses: GameAnalysis[], topN = 5): SwingMoment[] {
+export function biggestSwings(games: StoredGame[], analyses: SlimAnalysis[], topN = 5): SwingMoment[] {
   return userMoves(games, analyses).filter(({ m }) => finite(m.epLoss) && m.epLoss > 0).map(({ g, m }) => ({ gameId: g.id, ply: m.ply, san: m.san, epLoss: m.epLoss, winBefore: m.winBefore, winAfter: m.winAfter }))
     .sort((a, b) => b.epLoss - a.epLoss || a.gameId.localeCompare(b.gameId) || a.ply - b.ply).slice(0, finite(topN) ? Math.max(0, Math.floor(topN)) : 5);
 }
 
 /** UTC Monday-to-now versus the same elapsed portion of the previous week; games exactly at now are included. */
-export function weeklySummary(games: StoredGame[], analyses: GameAnalysis[], now: number): WeeklySummary {
+export function weeklySummary(games: StoredGame[], analyses: SlimAnalysis[], now: number): WeeklySummary {
   const date = new Date(now); date.setUTCHours(0, 0, 0, 0);
   const start = date.getTime() - ((date.getUTCDay() + 6) % 7) * DAY, previousStart = start - 7 * DAY;
   const period = (from: number, to: number): PeriodSummary => {
@@ -213,7 +214,7 @@ export function weeklySummary(games: StoredGame[], analyses: GameAnalysis[], now
 }
 
 /** Rank actionable candidates by measured expected points lost; openings require eight games. */
-export function focusRecommendation(games: StoredGame[], analyses: GameAnalysis[], drills: Drill[] = []): FocusRecommendation {
+export function focusRecommendation(games: StoredGame[], analyses: SlimAnalysis[], drills: Drill[] = []): FocusRecommendation {
   const selected = pairs(games, analyses).map(({ a }) => a);
   const candidates: { weight: number; value: FocusRecommendation }[] = computeLeaks(games, selected).filter(l => l.pointsLost > 0).map(l => ({ weight: l.pointsLost, value: {
     kind: 'leak', motif: l.motif, title: l.label, reason: `${l.label} cost ${l.pointsLost.toFixed(2)} expected points across ${l.count} moves, making it a valuable training target.`, drillIds: drills.filter(d => d.motifs.includes(l.motif)).map(d => d.id),
@@ -238,7 +239,7 @@ export function focusRecommendation(games: StoredGame[], analyses: GameAnalysis[
 }
 
 /** Heuristic, not an Elo estimate: 50 is neutral improvement; accuracy delta (45%), fewer errors (35%), and drill success (20%). Missing components are omitted; no evidence => 0. */
-export function progressScore(games: StoredGame[], analyses: GameAnalysis[], drills: Drill[], now: number): number {
+export function progressScore(games: StoredGame[], analyses: SlimAnalysis[], drills: Drill[], now: number): number {
   const week = weeklySummary(games, analyses, now), components: [number, number][] = [];
   if (week.delta.accuracy !== null) components.push([clamp(50 + week.delta.accuracy * 5), .45]);
   if (week.delta.errorsPer100 !== null) components.push([clamp(50 - week.delta.errorsPer100 * 5), .35]);
@@ -248,13 +249,13 @@ export function progressScore(games: StoredGame[], analyses: GameAnalysis[], dri
 }
 
 /** Recovered win probability in percentage points, not a prediction of future results. */
-export function recovery(drills: FsrsDrill[], analyses: GameAnalysis[] = []): { mastered: number; inProgress: number; winPctRecovered: number } {
-  const selected = new Map<string, GameAnalysis>();
+export function recovery(drills: FsrsDrill[], analyses: SlimAnalysis[] = []): { mastered: number; inProgress: number; winPctRecovered: number } {
+  const selected = new Map<string, SlimAnalysis>();
   for (const a of analyses) {
     const old = selected.get(a.gameId);
     if (!old || a.depth > old.depth || (a.depth === old.depth && a.createdAt > old.createdAt)) selected.set(a.gameId, a);
   }
-  const moves = new Map<string, AnalysedMove>([...selected.values()].flatMap(a => a.moves.map(m => [`${a.gameId}:${m.ply}`, m] as const)));
+  const moves = new Map<string, SlimMove>([...selected.values()].flatMap(a => a.moves.map(m => [`${a.gameId}:${m.ply}`, m] as const)));
   let mastered = 0, winPctRecovered = 0;
   for (const d of drills) if (isMastered(d)) {
     mastered++;
@@ -288,7 +289,7 @@ export interface InsightCard {
 const pieceNames: Record<PieceType, string> = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
 
 /** Piece making the blunder, not necessarily the piece subsequently lost. Invalid positions are omitted. */
-export function blundersByPiece(games: StoredGame[], analyses: GameAnalysis[]): PieceBlunders[] {
+export function blundersByPiece(games: StoredGame[], analyses: SlimAnalysis[]): PieceBlunders[] {
   const counts = new Map<PieceType, number>();
   for (const { m } of userMoves(games, analyses)) if (m.cls === 'blunder') {
     try {
@@ -302,7 +303,7 @@ export function blundersByPiece(games: StoredGame[], analyses: GameAnalysis[]): 
 }
 
 /** Calendar months in UTC, comparing month-to-date with the complete previous month; rates use user moves. */
-export function motifBreakdown(games: StoredGame[], analyses: GameAnalysis[], now: number): MotifComparison[] {
+export function motifBreakdown(games: StoredGame[], analyses: SlimAnalysis[], now: number): MotifComparison[] {
   const date = new Date(now), start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
   const previous = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1);
   const moves = userMoves(games.filter(g => g.endTime >= previous && g.endTime <= now), analyses);
@@ -314,12 +315,12 @@ export function motifBreakdown(games: StoredGame[], analyses: GameAnalysis[], no
     return { motif, thisMonth, lastMonth, thisMonthPer100: percent(thisMonth, current.length), lastMonthPer100: percent(lastMonth, last.length) };
   });
 }
-function performance(games: StoredGame[], analyses: GameAnalysis[]): Performance {
+function performance(games: StoredGame[], analyses: SlimAnalysis[]): Performance {
   const values = accuracyTrend(games, analyses).map(p => p.value);
   return { ...results(games), accuracy: average(values), accuracyGames: values.length };
 }
 /** Similar means within 100 rating points, inclusively. Missing ratings are excluded. */
-export function performanceByRatingBand(games: StoredGame[], analyses: GameAnalysis[] = []): Record<'lower' | 'similar' | 'higher', Performance> {
+export function performanceByRatingBand(games: StoredGame[], analyses: SlimAnalysis[] = []): Record<'lower' | 'similar' | 'higher', Performance> {
   const buckets: Record<'lower' | 'similar' | 'higher', StoredGame[]> = { lower: [], similar: [], higher: [] };
   for (const g of games) {
     const own = selfOf(g).rating, other = (g.userColor === 'w' ? g.black : g.white).rating;
@@ -330,7 +331,7 @@ export function performanceByRatingBand(games: StoredGame[], analyses: GameAnaly
   return { lower: performance(buckets.lower, analyses), similar: performance(buckets.similar, analyses), higher: performance(buckets.higher, analyses) };
 }
 /** Immediate next chronological game, across all time controls; draws do not start either cohort. */
-export function tiltDetection(games: StoredGame[], analyses: GameAnalysis[] = []) {
+export function tiltDetection(games: StoredGame[], analyses: SlimAnalysis[] = []) {
   const ordered = [...games].sort((a, b) => a.endTime - b.endTime || a.id.localeCompare(b.id));
   const afterLoss: StoredGame[] = [], afterWin: StoredGame[] = [];
   for (let i = 1; i < ordered.length; i++) {
@@ -342,29 +343,29 @@ export function tiltDetection(games: StoredGame[], analyses: GameAnalysis[] = []
     scoreDelta: loss.games && win.games ? loss.scorePercent - win.scorePercent : null };
 }
 /** Local hours (0–23): the player's own clock is what matters for habits. */
-export function performanceByTimeOfDay(games: StoredGame[], analyses: GameAnalysis[] = []): (Performance & { hour: number })[] {
+export function performanceByTimeOfDay(games: StoredGame[], analyses: SlimAnalysis[] = []): (Performance & { hour: number })[] {
   return Array.from({ length: 24 }, (_, hour) => ({ hour, ...performance(games.filter(g => new Date(g.endTime).getHours() === hour), analyses) }));
 }
 /** Local weekday, Sunday = 0. */
-export function performanceByDayOfWeek(games: StoredGame[], analyses: GameAnalysis[] = []): (Performance & { day: number; name: string })[] {
+export function performanceByDayOfWeek(games: StoredGame[], analyses: SlimAnalysis[] = []): (Performance & { day: number; name: string })[] {
   return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((name, day) => ({ day, name,
     ...performance(games.filter(g => new Date(g.endTime).getDay() === day), analyses) }));
 }
 /** Exact control and class are kept separate (e.g. 300 and 300+5). */
-export function performanceByTimeControl(games: StoredGame[], analyses: GameAnalysis[] = []): (Performance & { timeControl: string; timeClass: string })[] {
+export function performanceByTimeControl(games: StoredGame[], analyses: SlimAnalysis[] = []): (Performance & { timeControl: string; timeClass: string })[] {
   const buckets = new Map<string, StoredGame[]>();
   for (const g of games) { const key = JSON.stringify([g.timeClass, g.timeControl]); buckets.set(key, [...(buckets.get(key) ?? []), g]); }
   return [...buckets].sort(([a], [b]) => a.localeCompare(b)).map(([, xs]) => ({ timeControl: xs[0].timeControl, timeClass: xs[0].timeClass, ...performance(xs, analyses) }));
 }
 /** Before includes both sides' move 30 (plies 59–60); after starts at move 31. Move-weighted accuracy. */
-export function accuracyAfterMove30(games: StoredGame[], analyses: GameAnalysis[]) {
+export function accuracyAfterMove30(games: StoredGame[], analyses: SlimAnalysis[]) {
   const moves = userMoves(games, analyses).map(({ m }) => m).filter(m => finite(m.accuracy));
   const beforeValues = moves.filter(m => m.ply <= 60).map(m => m.accuracy), afterValues = moves.filter(m => m.ply > 60).map(m => m.accuracy);
   const before = { moves: beforeValues.length, average: average(beforeValues) }, after = { moves: afterValues.length, average: average(afterValues) };
   return { before, after, delta: before.average !== null && after.average !== null ? after.average - before.average : null };
 }
 /** Monday-based UTC week to date. Ranked by known user accuracy, then game id. */
-export function bestWorstGameThisWeek(games: StoredGame[], analyses: GameAnalysis[], now: number) {
+export function bestWorstGameThisWeek(games: StoredGame[], analyses: SlimAnalysis[], now: number) {
   const start = weeklySummary([], [], now).start;
   const points = accuracyTrend(games.filter(g => g.endTime >= start && g.endTime <= now), analyses)
     .sort((a, b) => b.value - a.value || a.gameId.localeCompare(b.gameId));
@@ -372,7 +373,7 @@ export function bestWorstGameThisWeek(games: StoredGame[], analyses: GameAnalysi
 }
 
 /** Ranked measured findings first; sparse histories receive factual coverage cards, never invented comparisons. */
-export function insightCards(games: StoredGame[], analyses: GameAnalysis[], drills: Drill[], now: number): InsightCard[] {
+export function insightCards(games: StoredGame[], analyses: SlimAnalysis[], drills: Drill[], now: number): InsightCard[] {
   const past = games.filter(g => g.endTime <= now), candidates: { rank: number; card: InsightCard }[] = [];
   const add = (rank: number, card: InsightCard) => candidates.push({ rank, card });
   const round = (n: number) => Number(n.toFixed(1)).toString();

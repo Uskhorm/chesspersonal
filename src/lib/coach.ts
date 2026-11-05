@@ -241,10 +241,16 @@ export function hints(m: AnalysedMove): Hint[] {
       ? 'Move your king out of check.' : `Block the check with your ${pieceName(first.piece)}.`;
     else if (after.inCheck()) concept = 'Give check to their king.';
   }
+  // Include every concrete square named by the idea, including later tactical targets.
+  const related: string[] = concept.match(/\b[a-h][1-8]\b/g) ?? [];
+  if (first && /check|king/.test(concept)) {
+    const king = new Chess(first.after).board().flat().find(p => p?.type === 'k' && p.color !== first.color);
+    if (king) related.push(king.square);
+  }
   return [
     { level: 1, text: `Look at your ${pieceName(p)} on ${from}.`, highlight: { squares: [from] } },
-    { level: 2, text: concept },
-    { level: 3, text: `Try your ${pieceName(p)} on ${to}${first?.promotion ? ` and promote to a ${pieceName(first.promotion)}` : ''}.`, highlight: { squares: [to], arrow: [from, to] } },
+    { level: 2, text: `Consider your highlighted ${pieceName(p)}. ${concept}`, highlight: { squares: [...new Set([from, ...related])] } },
+    { level: 3, text: `Try your ${pieceName(p)} on ${to}${first?.promotion ? ` and promote to a ${pieceName(first.promotion)}` : ''}.`, highlight: { squares: [from, to], arrow: [from, to] } },
   ];
 }
 

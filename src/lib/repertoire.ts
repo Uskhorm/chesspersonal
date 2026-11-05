@@ -1,6 +1,7 @@
+import { slimAnalysis, type SlimAnalysis, type SlimMove } from './db';
 import { Chess } from 'chess.js';
 import { loadOpenings, lookupOpening } from './openings';
-import type { AnalysedMove, Classification, Color, Drill, GameAnalysis, StoredGame } from './types';
+import type { Classification, Color, Drill, StoredGame } from './types';
 
 export type OpeningLookup = (fen: string) => readonly [string, string] | null | undefined;
 export interface RepertoireOptions {
@@ -18,7 +19,7 @@ export interface Results {
 export interface MoveEvidence {
   gameId: string;
   opponent: string;
-  move: AnalysedMove;
+  move: SlimMove;
 }
 export interface RepertoireMove extends Results {
   san: string;
@@ -141,14 +142,14 @@ const mostPlayed = (a: RepertoireMove, b: RepertoireMove) => b.count - a.count |
  * are unique games. Invalid PGNs are skipped, duplicate game ids counted once.
  */
 export function buildRepertoire(
-  games: readonly StoredGame[], analyses: readonly GameAnalysis[], opts: RepertoireOptions = {},
+  games: readonly StoredGame[], analyses: readonly SlimAnalysis[], opts: RepertoireOptions = {},
 ): Repertoire {
   const requested = opts.maxPly ?? 24;
   const maxPly = Number.isFinite(requested) ? Math.max(0, Math.min(24, Math.floor(requested))) : 24;
   const rep: Repertoire = { w: tree('w'), b: tree('b'), maxPly, skippedGameIds: [] };
   const lookup = opts.lookup ?? lookupOpening;
   // Prefer the newest snapshot if the caller supplies duplicate analyses.
-  const byGame = new Map<string, GameAnalysis>();
+  const byGame = new Map<string, SlimAnalysis>();
   for (const analysis of analyses) {
     if (!byGame.has(analysis.gameId) || byGame.get(analysis.gameId)!.createdAt < analysis.createdAt) byGame.set(analysis.gameId, analysis);
   }
@@ -205,7 +206,7 @@ export function buildRepertoire(
         edge.avgEpLoss = ((edge.avgEpLoss ?? 0) * n + a.epLoss) / (n + 1);
         edge.analysedCount++;
         edge.classifications[a.cls] = (edge.classifications[a.cls] ?? 0) + 1;
-        edge.evidence.push({ gameId: game.id, opponent: game.userColor === 'w' ? game.black.username : game.white.username, move: a });
+        edge.evidence.push({ gameId: game.id, opponent: game.userColor === 'w' ? game.black.username : game.white.username, move: slimAnalysis({ ...analysis!, moves: [a] }).moves[0] });
       }
       const isBook = !!afterBook || a?.cls === 'book';
       // Do not infer departure from an unloaded/unavailable book. Analysed book
@@ -236,7 +237,7 @@ export function buildRepertoire(
 
 /** Lazy-load the bundled Lichess book before building. */
 export async function buildRepertoireAsync(
-  games: readonly StoredGame[], analyses: readonly GameAnalysis[], opts: RepertoireOptions = {},
+  games: readonly StoredGame[], analyses: readonly SlimAnalysis[], opts: RepertoireOptions = {},
 ): Promise<Repertoire> {
   if (!opts.lookup) await loadOpenings();
   return buildRepertoire(games, analyses, opts);
@@ -271,7 +272,7 @@ export function openingLeaks(rep: Repertoire, opts: LeakOptions = {}): OpeningLe
   return leaks.sort((a, b) => b.priority - a.priority || a.color.localeCompare(b.color) || a.epd.localeCompare(b.epd) || a.move.uci.localeCompare(b.move.uci));
 }
 
-function legalCorrection(m: AnalysedMove, playedUci: string): boolean {
+function legalCorrection(m: SlimMove, playedUci: string): boolean {
   if (!m.bestSan || m.bestUci === playedUci || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(m.bestUci)) return false;
   try {
     const best = new Chess(m.fenBefore).move({ from: m.bestUci.slice(0, 2), to: m.bestUci.slice(2, 4), promotion: m.bestUci[4] });
@@ -327,3 +328,4 @@ export function repertoireSummary(rep: Repertoire): RepertoireSummary {
   });
   return { w: summarize(rep.w), b: summarize(rep.b) };
 }
+

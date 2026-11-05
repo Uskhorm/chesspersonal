@@ -319,14 +319,19 @@ export function useTrainSession(mode: TrainMode, options: TrainOptions = {}) {
   } : undefined, [item]);
   const hint = state.hintsUsed ? coaching?.hints[state.hintsUsed - 1] : undefined;
   const line = item ? lineOf(item) : [];
-  const puzzleHint = item?.kind === 'puzzle' && state.hintsUsed ? {
-    level: Math.min(3, state.hintsUsed) as 1 | 2 | 3,
-    text: state.hintsUsed === 1 ? `Look for ${item.p.themes.join(', ') || 'a forcing continuation'}.`
-      : state.hintsUsed === 2 ? `Look at the piece on ${line[state.solutionStep]?.slice(0, 2)}.` : 'Follow the highlighted move.',
-    highlight: state.hintsUsed >= 3 ? { arrow: [line[state.solutionStep]?.slice(0, 2), line[state.solutionStep]?.slice(2, 4)] as [string, string] }
-      : state.hintsUsed === 2 ? { squares: [line[state.solutionStep]?.slice(0, 2)] } : undefined,
-  } : undefined;
-  const activeHint = hint ?? puzzleHint;
+  const nextMove = line[state.solutionStep];
+  const from = nextMove?.slice(0, 2), to = nextMove?.slice(2, 4);
+  const puzzleHints = item?.kind === 'puzzle' && from && to ? [
+    { level: 1 as const, text: `Look at the highlighted piece for ${item.p.themes.join(', ') || 'a forcing continuation'}.`,
+      highlight: { squares: [from] } },
+    { level: 2 as const, text: 'Consider the highlighted piece and the squares lit up around its target.',
+      highlight: { squares: [from, ...Array.from({ length: 64 }, (_, i) => `${String.fromCharCode(97 + i % 8)}${1 + Math.floor(i / 8)}`)
+        .filter(sq => Math.abs(sq.charCodeAt(0) - to.charCodeAt(0)) <= 1 && Math.abs(Number(sq[1]) - Number(to[1])) <= 1)] } },
+    { level: 3 as const, text: 'Follow the highlighted move.',
+      highlight: { squares: [from, to], arrow: [from, to] as [string, string] } },
+  ] : [];
+  const usedHints = (coaching?.hints ?? puzzleHints).slice(0, state.hintsUsed);
+  const activeHint = hint ?? usedHints[usedHints.length - 1];
   // Replay captions describe step - 1; the arrow previews step, the next move.
   const reveal = state.phase === 'replay' ? line[state.replayStep]
     : ['wrong', 'explain'].includes(state.phase) ? line[state.solutionStep] : undefined;
@@ -340,7 +345,7 @@ export function useTrainSession(mode: TrainMode, options: TrainOptions = {}) {
       orientation: item && new Chess(startFen(item)).turn() === 'b' ? 'black' as const : 'white' as const,
       movable: state.phase === 'solve' || state.phase === 'confirm',
       arrows: arrow ? [{ from: arrow[0], to: arrow[1], brush: reveal ? 'best' as const : 'hint' as const }] : [],
-      highlights: state.phase === 'solve' ? activeHint?.highlight?.squares ?? [] : [] },
+      highlights: state.phase === 'solve' ? [...new Set(usedHints.flatMap(h => h.highlight?.squares ?? []))] : [] },
     replay: { step: state.replayStep, total: line.length }, summary: trainSummary(state),
     actions: { submitMove, confirmMove: submitMove,
       nextHint: () => dispatch({ type: 'hint' }), giveUp: () => dispatch({ type: 'giveUp', now: Date.now() }),

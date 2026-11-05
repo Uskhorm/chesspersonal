@@ -12,6 +12,7 @@ import { useStore } from '../lib/store';
 import { sfx } from '../lib/sound';
 import { themeFor } from './themes';
 import { spring } from './motion';
+import { PromotionPicker, type PromotionRole } from './PromotionPicker';
 
 export interface Arrow {
   from: string;
@@ -48,6 +49,8 @@ interface Props {
   sound?: boolean;
   /** Snap instead of animating (thumbnails). */
   still?: boolean;
+  /** Skip the picker and promote to queen immediately. */
+  autoQueen?: boolean;
 }
 
 export function legalDests(fen: string): Map<Key, Key[]> {
@@ -112,9 +115,24 @@ export function Board({
   coordinates = true,
   sound,
   still,
+  autoQueen = false,
 }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const api = useRef<Api | null>(null);
+  const [promotion, setPromotion] = useState<{ orig: Key; dest: Key; color: 'white' | 'black' } | null>(null);
+  const promotionPending = useRef(false);
+  const [resync, setResync] = useState(0);
+  useEffect(() => {
+    promotionPending.current = false;
+    setPromotion(null);
+  }, [fen, orientation, nonce, movable, autoQueen]);
+  const finishPromotion = (role?: PromotionRole) => {
+    if (!promotion || !promotionPending.current) return;
+    promotionPending.current = false;
+    setPromotion(null);
+    setResync((n) => n + 1);
+    if (role) onMoveRef.current?.(promotion.orig, promotion.dest, role);
+  };
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
   const themeId = useStore((s) => s.settings.boardTheme);
@@ -180,7 +198,7 @@ export function Board({
       lastMove: lastMove as Key[] | undefined,
       highlight: { lastMove: true, check: true, custom },
       viewOnly: false,
-      movable: movable
+      movable: movable && !promotionPending.current
         ? {
             free: false,
             color: turnColor,
@@ -188,10 +206,17 @@ export function Board({
             showDests: true,
             events: {
               after: (orig, dest) => {
+                if (promotionPending.current) return;
                 let promo: string | undefined;
                 try {
                   const p = new Chess(fen).get(orig as Square);
                   promo = p?.type === 'p' && (dest[1] === '8' || dest[1] === '1') ? 'q' : undefined;
+                  if (promo && !autoQueen && p) {
+                    promotionPending.current = true;
+                    a.set({ movable: { color: undefined, dests: new Map() }, draggable: { enabled: false }, selectable: { enabled: false } });
+                    setPromotion({ orig, dest, color: p.color === 'w' ? 'white' : 'black' });
+                    return;
+                  }
                 } catch {
                   /* ignore */
                 }
@@ -200,10 +225,10 @@ export function Board({
             },
           }
         : { free: false, color: undefined, dests: new Map() },
-      draggable: { enabled: !!movable },
-      selectable: { enabled: !!movable },
+      draggable: { enabled: !!movable && !promotionPending.current },
+      selectable: { enabled: !!movable && !promotionPending.current },
     });
-  }, [fen, orientation, lastMove?.[0], lastMove?.[1], movable, turnColor, inCheck, nonce, custom]);
+  }, [fen, orientation, lastMove?.[0], lastMove?.[1], movable, turnColor, inCheck, nonce, custom, resync, autoQueen]);
 
   const arrowKey = JSON.stringify(arrows);
   useEffect(() => {
@@ -233,7 +258,16 @@ export function Board({
 
   return (
     <div className={`board-wrap ${className ?? ''}`} style={{ ['--light' as string]: theme.light, ['--dark' as string]: theme.dark }}>
-      <div ref={el} className="cg-host" />
+      <div ref={el} className="cg-host" tabIndex={-1} />
+      {promotion && (
+        <PromotionPicker
+          square={promotion.dest}
+          color={promotion.color}
+          orientation={orientation}
+          onChoose={(role) => finishPromotion(role)}
+          onCancel={() => finishPromotion()}
+        />
+      )}
       <AnimatePresence>
         {badge && (
           <motion.div

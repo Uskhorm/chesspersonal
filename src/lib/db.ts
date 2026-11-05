@@ -1,5 +1,21 @@
 import Dexie, { type EntityTable, type Transaction } from 'dexie';
-import type { Drill, GameAnalysis, StoredGame } from './types';
+import type { AnalysedMove, Drill, GameAnalysis, StoredGame } from './types';
+
+// FEN is needed for stale-position validation, legal corrections and opening drills.
+export type SlimMove = Pick<AnalysedMove, 'ply' | 'color' | 'san' | 'uci' | 'from' | 'to' | 'fenBefore' | 'cls' | 'epLoss' | 'accuracy' | 'winBefore' | 'winAfter' | 'motifs' | 'clock' | 'bestSan' | 'bestUci' | 'opening'>;
+export type SlimAnalysis = Omit<GameAnalysis, 'moves' | 'updatedAt'> & { moves: SlimMove[] };
+export function slimAnalysis(a: SlimAnalysis): SlimAnalysis {
+  return {
+    gameId: a.gameId, depth: a.depth, createdAt: a.createdAt, white: a.white, black: a.black,
+    winCurve: a.winCurve, opening: a.opening, eco: a.eco,
+    moves: (a.moves ?? []).map(m => ({
+      ply: m.ply, color: m.color, san: m.san, uci: m.uci, from: m.from, to: m.to,
+      fenBefore: m.fenBefore, cls: m.cls, epLoss: m.epLoss, accuracy: m.accuracy,
+      winBefore: m.winBefore, winAfter: m.winAfter, motifs: m.motifs,
+      clock: m.clock, bestSan: m.bestSan, bestUci: m.bestUci, opening: m.opening,
+    })),
+  };
+}
 
 export interface AnalysisSummary {
   gameId: string;
@@ -65,6 +81,7 @@ class ChessDB extends Dexie {
   analyses!: EntityTable<GameAnalysis, 'gameId'>;
   drills!: EntityTable<Drill, 'id'>;
   activity!: EntityTable<ActivityDay, 'day'>;
+  slim!: EntityTable<SlimAnalysis, 'gameId'>;
   summaries!: EntityTable<AnalysisSummary, 'gameId'>;
 
   constructor() {
@@ -88,15 +105,21 @@ class ChessDB extends Dexie {
         transaction.idbtrans.objectStore('summaries').put(summarize(analysis, games.get(analysis.gameId)));
       });
     });
+    this.version(4).stores({ slim: 'gameId' }).upgrade(async transaction => {
+      await transaction.table<GameAnalysis>('analyses').each(analysis => {
+        transaction.idbtrans.objectStore('slim').put(slimAnalysis(analysis));
+      });
+    });
     // Hooks run inside the originating transaction, including explicit single-table
     // transactions. Expand its native scope so the outbox write is atomic.
     this.use({ stack: 'dbcore', name: 'sync-outbox-scope', create: core => ({
       ...core,
       transaction: (stores, mode, options) => core.transaction(
         mode === 'readwrite' && stores.some(name => collections.includes(name as typeof collections[number]))
-          ? [...new Set([...stores, 'outbox', ...(stores.includes('analyses') ? ['summaries', 'games'] : [])])] : stores, mode, options),
+          ? [...new Set([...stores, 'outbox', ...(stores.includes('analyses') ? ['summaries', 'slim', 'games'] : [])])] : stores, mode, options),
     }) });
     const writeSummary = (analysis: GameAnalysis, transaction: Transaction) => {
+      transaction.idbtrans.objectStore('slim').put(slimAnalysis(analysis));
       const request = transaction.idbtrans.objectStore('games').get(analysis.gameId);
       request.onsuccess = () => transaction.idbtrans.objectStore('summaries').put(summarize(analysis, request.result));
     };
@@ -110,6 +133,7 @@ class ChessDB extends Dexie {
     });
     this.analyses.hook('deleting', (key, _analysis, transaction) => {
       transaction.idbtrans.objectStore('summaries').delete(key);
+      transaction.idbtrans.objectStore('slim').delete(key);
     });
     for (const collection of collections) {
       const table = this.table(collection);

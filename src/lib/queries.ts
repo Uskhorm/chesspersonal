@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, today } from './db';
 import { isMastered } from './srs';
@@ -49,4 +50,25 @@ export function useTodayActivity() {
     const day = today();
     return (await db.activity.get(day)) ?? { day, xp: 0, drills: 0, correct: 0, reviews: 0 };
   }, []);
+}
+
+
+export function useSlimAnalyses(gameIds?: string[]) {
+  return useLiveQuery(() => gameIds === undefined ? db.slim.toArray() : db.slim.where('gameId').anyOf(gameIds).toArray(), [JSON.stringify(gameIds)]);
+}
+
+/** Defer publishing input until idle; consumers memoize expensive calculations. */
+export function useIdleInput<T>(input: T): T | undefined {
+  const [ready, setReady] = useState<{ input: T }>();
+  useEffect(() => {
+    let active = true;
+    const publish = () => { if (active) setReady({ input }); };
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(publish, { timeout: 500 });
+      return () => { active = false; window.cancelIdleCallback(id); };
+    }
+    const id = window.setTimeout(publish, 16);
+    return () => { active = false; window.clearTimeout(id); };
+  }, [input]);
+  return ready?.input === input ? ready.input : undefined;
 }

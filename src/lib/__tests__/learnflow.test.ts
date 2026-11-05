@@ -9,6 +9,7 @@ vi.mock('react', () => ({
   useMemo: (make: () => unknown) => make(),
   useEffect: (effect: () => void) => { hook.effects.push(effect); },
 }));
+import { hints } from '../coach';
 import { verifyMove, type VerifyResult } from '../verify';
 import { createInitialLearnState, learnReducer, useLearnFlow, verifyLearnAttempt, type LearnState } from '../learnflow';
 import type { AnalysedMove, GameAnalysis } from '../types';
@@ -348,4 +349,20 @@ describe('flow additions and context restoration', () => {
     hook.effects[1]();
     expect(onResult).toHaveBeenCalledExactlyOnceWith(s.moments[0], path === 'success' ? 'with-help' : 'failed', { hintsUsed: 1, attempts: path === 'success' ? 2 : 1 });
   });
+});
+
+
+it('retains every revealed hint square and adds the level-three arrow', () => {
+  let s = start();
+  const expected = new Set<string>();
+  const hs = hints(s.moments[0]);
+  for (let level = 1; level <= 3; level++) {
+    s = learnReducer(s, { type: 'hint' });
+    hs[level - 1].highlight?.squares?.forEach(sq => expected.add(sq));
+    hook.state = s;
+    const view = useLearnFlow(s.analysis, s.userColor);
+    expect(view.hint?.highlight?.squares?.length).toBeGreaterThan(0);
+    expect(view.board.highlights).toEqual([...expected]);
+    expect(view.board.arrows).toEqual(level === 3 ? [{ from: 'd2', to: 'd4', brush: 'hint' }] : []);
+  }
 });
